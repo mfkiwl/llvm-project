@@ -408,6 +408,9 @@ struct OMPInformationCache : public InformationCache {
     // TODO: We should attach the attributes defined in OMPKinds.def.
   }
 
+  /// Get the list of kernels in the module.
+  SmallPtrSetImpl<Kernel> &getKernels() { return Kernels; }
+
   /// Collection of known kernels (\see Kernel) in the module.
   SmallPtrSetImpl<Kernel> &Kernels;
 };
@@ -1142,6 +1145,7 @@ private:
 
   void analysisGlobalization() {
     auto &RFI = OMPInfoCache.RFIs[OMPRTL___kmpc_alloc_shared];
+
     auto CheckGlobalization = [&](Use &U, Function &Decl) {
       if (CallInst *CI = getCallIfRegularCall(U, &RFI)) {
         auto Remark = [&](OptimizationRemarkAnalysis ORA) {
