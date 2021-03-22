@@ -98,6 +98,8 @@ struct AAExecutionDomain;
 
 struct AAHeapToShared;
 
+struct AAHeapToShared;
+
 struct AAICVTracker;
 
 /// OpenMP specific information. For now, stores RFIs and ICVs also needed for
