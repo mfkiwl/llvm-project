@@ -2,9 +2,9 @@
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --check-prefix=CHECK1
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --check-prefix=CHECK2
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=DEBUG1
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=CHECK3
 
-// RUN: %clang_cc1 -verify -fopenmp-simd -x c++ -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --implicit-check-not="{{__kmpc|__tgt}}"
+// RUN: %clang_cc1 -triple x86_64-unknown-linux -verify -fopenmp-simd -x c++ -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s --implicit-check-not="{{__kmpc|__tgt}}"
 // RUN: %clang_cc1 -fopenmp-simd -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp-simd -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s --implicit-check-not="{{__kmpc|__tgt}}"
 // RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp-simd -fexceptions -fcxx-exceptions -debug-info-kind=line-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --implicit-check-not="{{__kmpc|__tgt}}"
@@ -205,90 +205,90 @@ void parallel_taskgroup() {
 // CHECK2-NEXT:    unreachable
 //
 //
-// DEBUG1-LABEL: define {{[^@]+}}@_Z3foov
-// DEBUG1-SAME: () #[[ATTR0:[0-9]+]] !dbg [[DBG6:![0-9]+]] {
-// DEBUG1-NEXT:  entry:
-// DEBUG1-NEXT:    call void @_Z8mayThrowv(), !dbg [[DBG9:![0-9]+]]
-// DEBUG1-NEXT:    ret void, !dbg [[DBG10:![0-9]+]]
+// CHECK3-LABEL: define {{[^@]+}}@_Z3foov
+// CHECK3-SAME: () #[[ATTR0:[0-9]+]] !dbg [[DBG6:![0-9]+]] {
+// CHECK3-NEXT:  entry:
+// CHECK3-NEXT:    call void @_Z8mayThrowv(), !dbg [[DBG9:![0-9]+]]
+// CHECK3-NEXT:    ret void, !dbg [[DBG10:![0-9]+]]
 //
 //
-// DEBUG1-LABEL: define {{[^@]+}}@main
-// DEBUG1-SAME: () #[[ATTR2:[0-9]+]] personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) !dbg [[DBG11:![0-9]+]] {
-// DEBUG1-NEXT:  entry:
-// DEBUG1-NEXT:    [[RETVAL:%.*]] = alloca i32, align 4
-// DEBUG1-NEXT:    [[A:%.*]] = alloca i8, align 1
-// DEBUG1-NEXT:    [[EXN_SLOT:%.*]] = alloca i8*, align 8
-// DEBUG1-NEXT:    [[EHSELECTOR_SLOT:%.*]] = alloca i32, align 4
-// DEBUG1-NEXT:    [[TMP0:%.*]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* @[[GLOB1:[0-9]+]])
-// DEBUG1-NEXT:    store i32 0, i32* [[RETVAL]], align 4
-// DEBUG1-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB1]], i32 [[TMP0]]), !dbg [[DBG12:![0-9]+]]
-// DEBUG1-NEXT:    store i8 2, i8* [[A]], align 1, !dbg [[DBG13:![0-9]+]]
-// DEBUG1-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB1]], i32 [[TMP0]]), !dbg [[DBG14:![0-9]+]]
-// DEBUG1-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB3:[0-9]+]], i32 [[TMP0]]), !dbg [[DBG15:![0-9]+]]
-// DEBUG1-NEXT:    invoke void @_Z3foov()
-// DEBUG1-NEXT:    to label [[INVOKE_CONT:%.*]] unwind label [[LPAD:%.*]], !dbg [[DBG16:![0-9]+]]
-// DEBUG1:       invoke.cont:
-// DEBUG1-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB3]], i32 [[TMP0]]), !dbg [[DBG16]]
-// DEBUG1-NEXT:    [[TMP1:%.*]] = load i8, i8* [[A]], align 1, !dbg [[DBG17:![0-9]+]]
-// DEBUG1-NEXT:    [[CONV:%.*]] = sext i8 [[TMP1]] to i32, !dbg [[DBG17]]
-// DEBUG1-NEXT:    ret i32 [[CONV]], !dbg [[DBG18:![0-9]+]]
-// DEBUG1:       lpad:
-// DEBUG1-NEXT:    [[TMP2:%.*]] = landingpad { i8*, i32 }
-// DEBUG1-NEXT:    catch i8* null, !dbg [[DBG19:![0-9]+]]
-// DEBUG1-NEXT:    [[TMP3:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 0, !dbg [[DBG19]]
-// DEBUG1-NEXT:    store i8* [[TMP3]], i8** [[EXN_SLOT]], align 8, !dbg [[DBG19]]
-// DEBUG1-NEXT:    [[TMP4:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 1, !dbg [[DBG19]]
-// DEBUG1-NEXT:    store i32 [[TMP4]], i32* [[EHSELECTOR_SLOT]], align 4, !dbg [[DBG19]]
-// DEBUG1-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB3]], i32 [[TMP0]]), !dbg [[DBG16]]
-// DEBUG1-NEXT:    br label [[TERMINATE_HANDLER:%.*]], !dbg [[DBG16]]
-// DEBUG1:       terminate.handler:
-// DEBUG1-NEXT:    [[EXN:%.*]] = load i8*, i8** [[EXN_SLOT]], align 8, !dbg [[DBG16]]
-// DEBUG1-NEXT:    call void @__clang_call_terminate(i8* [[EXN]]) #[[ATTR8:[0-9]+]], !dbg [[DBG16]]
-// DEBUG1-NEXT:    unreachable, !dbg [[DBG16]]
+// CHECK3-LABEL: define {{[^@]+}}@main
+// CHECK3-SAME: () #[[ATTR2:[0-9]+]] personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) !dbg [[DBG11:![0-9]+]] {
+// CHECK3-NEXT:  entry:
+// CHECK3-NEXT:    [[RETVAL:%.*]] = alloca i32, align 4
+// CHECK3-NEXT:    [[A:%.*]] = alloca i8, align 1
+// CHECK3-NEXT:    [[EXN_SLOT:%.*]] = alloca i8*, align 8
+// CHECK3-NEXT:    [[EHSELECTOR_SLOT:%.*]] = alloca i32, align 4
+// CHECK3-NEXT:    [[TMP0:%.*]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* @[[GLOB1:[0-9]+]])
+// CHECK3-NEXT:    store i32 0, i32* [[RETVAL]], align 4
+// CHECK3-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB1]], i32 [[TMP0]]), !dbg [[DBG12:![0-9]+]]
+// CHECK3-NEXT:    store i8 2, i8* [[A]], align 1, !dbg [[DBG13:![0-9]+]]
+// CHECK3-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB1]], i32 [[TMP0]]), !dbg [[DBG14:![0-9]+]]
+// CHECK3-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB3:[0-9]+]], i32 [[TMP0]]), !dbg [[DBG15:![0-9]+]]
+// CHECK3-NEXT:    invoke void @_Z3foov()
+// CHECK3-NEXT:    to label [[INVOKE_CONT:%.*]] unwind label [[LPAD:%.*]], !dbg [[DBG16:![0-9]+]]
+// CHECK3:       invoke.cont:
+// CHECK3-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB3]], i32 [[TMP0]]), !dbg [[DBG16]]
+// CHECK3-NEXT:    [[TMP1:%.*]] = load i8, i8* [[A]], align 1, !dbg [[DBG17:![0-9]+]]
+// CHECK3-NEXT:    [[CONV:%.*]] = sext i8 [[TMP1]] to i32, !dbg [[DBG17]]
+// CHECK3-NEXT:    ret i32 [[CONV]], !dbg [[DBG18:![0-9]+]]
+// CHECK3:       lpad:
+// CHECK3-NEXT:    [[TMP2:%.*]] = landingpad { i8*, i32 }
+// CHECK3-NEXT:    catch i8* null, !dbg [[DBG19:![0-9]+]]
+// CHECK3-NEXT:    [[TMP3:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 0, !dbg [[DBG19]]
+// CHECK3-NEXT:    store i8* [[TMP3]], i8** [[EXN_SLOT]], align 8, !dbg [[DBG19]]
+// CHECK3-NEXT:    [[TMP4:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 1, !dbg [[DBG19]]
+// CHECK3-NEXT:    store i32 [[TMP4]], i32* [[EHSELECTOR_SLOT]], align 4, !dbg [[DBG19]]
+// CHECK3-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB3]], i32 [[TMP0]]), !dbg [[DBG16]]
+// CHECK3-NEXT:    br label [[TERMINATE_HANDLER:%.*]], !dbg [[DBG16]]
+// CHECK3:       terminate.handler:
+// CHECK3-NEXT:    [[EXN:%.*]] = load i8*, i8** [[EXN_SLOT]], align 8, !dbg [[DBG16]]
+// CHECK3-NEXT:    call void @__clang_call_terminate(i8* [[EXN]]) #[[ATTR8:[0-9]+]], !dbg [[DBG16]]
+// CHECK3-NEXT:    unreachable, !dbg [[DBG16]]
 //
 //
-// DEBUG1-LABEL: define {{[^@]+}}@__clang_call_terminate
-// DEBUG1-SAME: (i8* [[TMP0:%.*]]) #[[ATTR5:[0-9]+]] {
-// DEBUG1-NEXT:    [[TMP2:%.*]] = call i8* @__cxa_begin_catch(i8* [[TMP0]]) #[[ATTR3:[0-9]+]]
-// DEBUG1-NEXT:    call void @_ZSt9terminatev() #[[ATTR8]]
-// DEBUG1-NEXT:    unreachable
+// CHECK3-LABEL: define {{[^@]+}}@__clang_call_terminate
+// CHECK3-SAME: (i8* [[TMP0:%.*]]) #[[ATTR5:[0-9]+]] {
+// CHECK3-NEXT:    [[TMP2:%.*]] = call i8* @__cxa_begin_catch(i8* [[TMP0]]) #[[ATTR3:[0-9]+]]
+// CHECK3-NEXT:    call void @_ZSt9terminatev() #[[ATTR8]]
+// CHECK3-NEXT:    unreachable
 //
 //
-// DEBUG1-LABEL: define {{[^@]+}}@_Z18parallel_taskgroupv
-// DEBUG1-SAME: () #[[ATTR6:[0-9]+]] !dbg [[DBG20:![0-9]+]] {
-// DEBUG1-NEXT:  entry:
-// DEBUG1-NEXT:    call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(%struct.ident_t* @[[GLOB7:[0-9]+]], i32 0, void (i32*, i32*, ...)* bitcast (void (i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*)), !dbg [[DBG21:![0-9]+]]
-// DEBUG1-NEXT:    ret void, !dbg [[DBG22:![0-9]+]]
+// CHECK3-LABEL: define {{[^@]+}}@_Z18parallel_taskgroupv
+// CHECK3-SAME: () #[[ATTR6:[0-9]+]] !dbg [[DBG20:![0-9]+]] {
+// CHECK3-NEXT:  entry:
+// CHECK3-NEXT:    call void (%struct.ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(%struct.ident_t* @[[GLOB7:[0-9]+]], i32 0, void (i32*, i32*, ...)* bitcast (void (i32*, i32*)* @.omp_outlined. to void (i32*, i32*, ...)*)), !dbg [[DBG21:![0-9]+]]
+// CHECK3-NEXT:    ret void, !dbg [[DBG22:![0-9]+]]
 //
 //
-// DEBUG1-LABEL: define {{[^@]+}}@.omp_outlined.
-// DEBUG1-SAME: (i32* noalias [[DOTGLOBAL_TID_:%.*]], i32* noalias [[DOTBOUND_TID_:%.*]]) #[[ATTR7:[0-9]+]] personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) !dbg [[DBG23:![0-9]+]] {
-// DEBUG1-NEXT:  entry:
-// DEBUG1-NEXT:    [[DOTGLOBAL_TID__ADDR:%.*]] = alloca i32*, align 8
-// DEBUG1-NEXT:    [[DOTBOUND_TID__ADDR:%.*]] = alloca i32*, align 8
-// DEBUG1-NEXT:    [[EXN_SLOT:%.*]] = alloca i8*, align 8
-// DEBUG1-NEXT:    [[EHSELECTOR_SLOT:%.*]] = alloca i32, align 4
-// DEBUG1-NEXT:    store i32* [[DOTGLOBAL_TID_]], i32** [[DOTGLOBAL_TID__ADDR]], align 8
-// DEBUG1-NEXT:    store i32* [[DOTBOUND_TID_]], i32** [[DOTBOUND_TID__ADDR]], align 8
-// DEBUG1-NEXT:    [[TMP0:%.*]] = load i32*, i32** [[DOTGLOBAL_TID__ADDR]], align 8, !dbg [[DBG24:![0-9]+]]
-// DEBUG1-NEXT:    [[TMP1:%.*]] = load i32, i32* [[TMP0]], align 4, !dbg [[DBG24]]
-// DEBUG1-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB5:[0-9]+]], i32 [[TMP1]]), !dbg [[DBG24]]
-// DEBUG1-NEXT:    invoke void @_Z3foov()
-// DEBUG1-NEXT:    to label [[INVOKE_CONT:%.*]] unwind label [[LPAD:%.*]], !dbg [[DBG25:![0-9]+]]
-// DEBUG1:       invoke.cont:
-// DEBUG1-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB5]], i32 [[TMP1]]), !dbg [[DBG25]]
-// DEBUG1-NEXT:    ret void, !dbg [[DBG26:![0-9]+]]
-// DEBUG1:       lpad:
-// DEBUG1-NEXT:    [[TMP2:%.*]] = landingpad { i8*, i32 }
-// DEBUG1-NEXT:    catch i8* null, !dbg [[DBG27:![0-9]+]]
-// DEBUG1-NEXT:    [[TMP3:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 0, !dbg [[DBG27]]
-// DEBUG1-NEXT:    store i8* [[TMP3]], i8** [[EXN_SLOT]], align 8, !dbg [[DBG27]]
-// DEBUG1-NEXT:    [[TMP4:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 1, !dbg [[DBG27]]
-// DEBUG1-NEXT:    store i32 [[TMP4]], i32* [[EHSELECTOR_SLOT]], align 4, !dbg [[DBG27]]
-// DEBUG1-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB5]], i32 [[TMP1]]), !dbg [[DBG25]]
-// DEBUG1-NEXT:    br label [[TERMINATE_HANDLER:%.*]], !dbg [[DBG25]]
-// DEBUG1:       terminate.handler:
-// DEBUG1-NEXT:    [[EXN:%.*]] = load i8*, i8** [[EXN_SLOT]], align 8, !dbg [[DBG25]]
-// DEBUG1-NEXT:    call void @__clang_call_terminate(i8* [[EXN]]) #[[ATTR8]], !dbg [[DBG25]]
-// DEBUG1-NEXT:    unreachable, !dbg [[DBG25]]
+// CHECK3-LABEL: define {{[^@]+}}@.omp_outlined.
+// CHECK3-SAME: (i32* noalias [[DOTGLOBAL_TID_:%.*]], i32* noalias [[DOTBOUND_TID_:%.*]]) #[[ATTR7:[0-9]+]] personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*) !dbg [[DBG23:![0-9]+]] {
+// CHECK3-NEXT:  entry:
+// CHECK3-NEXT:    [[DOTGLOBAL_TID__ADDR:%.*]] = alloca i32*, align 8
+// CHECK3-NEXT:    [[DOTBOUND_TID__ADDR:%.*]] = alloca i32*, align 8
+// CHECK3-NEXT:    [[EXN_SLOT:%.*]] = alloca i8*, align 8
+// CHECK3-NEXT:    [[EHSELECTOR_SLOT:%.*]] = alloca i32, align 4
+// CHECK3-NEXT:    store i32* [[DOTGLOBAL_TID_]], i32** [[DOTGLOBAL_TID__ADDR]], align 8
+// CHECK3-NEXT:    store i32* [[DOTBOUND_TID_]], i32** [[DOTBOUND_TID__ADDR]], align 8
+// CHECK3-NEXT:    [[TMP0:%.*]] = load i32*, i32** [[DOTGLOBAL_TID__ADDR]], align 8, !dbg [[DBG24:![0-9]+]]
+// CHECK3-NEXT:    [[TMP1:%.*]] = load i32, i32* [[TMP0]], align 4, !dbg [[DBG24]]
+// CHECK3-NEXT:    call void @__kmpc_taskgroup(%struct.ident_t* @[[GLOB5:[0-9]+]], i32 [[TMP1]]), !dbg [[DBG24]]
+// CHECK3-NEXT:    invoke void @_Z3foov()
+// CHECK3-NEXT:    to label [[INVOKE_CONT:%.*]] unwind label [[LPAD:%.*]], !dbg [[DBG25:![0-9]+]]
+// CHECK3:       invoke.cont:
+// CHECK3-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB5]], i32 [[TMP1]]), !dbg [[DBG25]]
+// CHECK3-NEXT:    ret void, !dbg [[DBG26:![0-9]+]]
+// CHECK3:       lpad:
+// CHECK3-NEXT:    [[TMP2:%.*]] = landingpad { i8*, i32 }
+// CHECK3-NEXT:    catch i8* null, !dbg [[DBG27:![0-9]+]]
+// CHECK3-NEXT:    [[TMP3:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 0, !dbg [[DBG27]]
+// CHECK3-NEXT:    store i8* [[TMP3]], i8** [[EXN_SLOT]], align 8, !dbg [[DBG27]]
+// CHECK3-NEXT:    [[TMP4:%.*]] = extractvalue { i8*, i32 } [[TMP2]], 1, !dbg [[DBG27]]
+// CHECK3-NEXT:    store i32 [[TMP4]], i32* [[EHSELECTOR_SLOT]], align 4, !dbg [[DBG27]]
+// CHECK3-NEXT:    call void @__kmpc_end_taskgroup(%struct.ident_t* @[[GLOB5]], i32 [[TMP1]]), !dbg [[DBG25]]
+// CHECK3-NEXT:    br label [[TERMINATE_HANDLER:%.*]], !dbg [[DBG25]]
+// CHECK3:       terminate.handler:
+// CHECK3-NEXT:    [[EXN:%.*]] = load i8*, i8** [[EXN_SLOT]], align 8, !dbg [[DBG25]]
+// CHECK3-NEXT:    call void @__clang_call_terminate(i8* [[EXN]]) #[[ATTR8]], !dbg [[DBG25]]
+// CHECK3-NEXT:    unreachable, !dbg [[DBG25]]
 //
