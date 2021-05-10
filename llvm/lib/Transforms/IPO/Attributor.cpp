@@ -155,6 +155,11 @@ static cl::opt<bool>
                    cl::desc("Print Attributor's internal call graph"),
                    cl::init(false));
 
+static cl::opt<bool> SimplifyAllLoads("attributor-simplify-all-loads",
+                                      cl::Hidden,
+                                      cl::desc("Try to simplify all loads."),
+                                      cl::init(true));
+
 /// Logic operators for the change status enum class.
 ///
 ///{
@@ -165,6 +170,17 @@ ChangeStatus llvm::operator&(ChangeStatus L, ChangeStatus R) {
   return L == ChangeStatus::UNCHANGED ? L : R;
 }
 ///}
+
+Constant *AA::getInitialValueForObj(Value &Obj, Type &Ty) {
+  if (isa<AllocaInst>(Obj))
+    return UndefValue::get(&Ty);
+  auto *GV = dyn_cast<GlobalVariable>(&Obj);
+  if (!GV || !GV->hasLocalLinkage())
+    return nullptr;
+  if (!GV->hasInitializer())
+    return UndefValue::get(&Ty);
+  return dyn_cast_or_null<Constant>(getWithType(*GV->getInitializer(), Ty));
+}
 
 bool AA::isValidInScope(const Value &V, const Function *Scope) {
   if (isa<Constant>(V))
@@ -707,10 +723,11 @@ Optional<Value *> Attributor::translateArgumentToCallSiteContent(
   if (*V == nullptr || isa<Constant>(*V))
     return V;
   if (auto *Arg = dyn_cast<Argument>(*V))
-    if (!Arg->hasPointeeInMemoryValueAttr())
-      return getAssumedSimplified(
-          IRPosition::callsite_argument(CB, Arg->getArgNo()), AA,
-          UsedAssumedInformation);
+    if (CB.getCalledFunction() == Arg->getParent())
+      if (!Arg->hasPointeeInMemoryValueAttr())
+        return getAssumedSimplified(
+            IRPosition::callsite_argument(CB, Arg->getArgNo()), AA,
+            UsedAssumedInformation);
   return nullptr;
 }
 
@@ -840,7 +857,9 @@ bool Attributor::isAssumedDead(const IRPosition &IRP,
 
 bool Attributor::checkForAllUses(function_ref<bool(const Use &, bool &)> Pred,
                                  const AbstractAttribute &QueryingAA,
-                                 const Value &V, DepClassTy LivenessDepClass) {
+                                 const Value &V,
+                                 bool CheckBBLivenessOnly,
+                                 DepClassTy LivenessDepClass) {
 
   // Check the trivial case first as it catches void values.
   if (V.use_empty())
@@ -869,7 +888,7 @@ bool Attributor::checkForAllUses(function_ref<bool(const Use &, bool &)> Pred,
     LLVM_DEBUG(dbgs() << "[Attributor] Check use: " << **U << " in "
                       << *U->getUser() << "\n");
     if (isAssumedDead(*U, &QueryingAA, LivenessAA,
-                      /* CheckBBLivenessOnly */ false, LivenessDepClass)) {
+                      CheckBBLivenessOnly, LivenessDepClass)) {
       LLVM_DEBUG(dbgs() << "[Attributor] Dead use, skip!\n");
       continue;
     }
@@ -2402,10 +2421,12 @@ void Attributor::identifyDefaultAbstractAttributes(Function &F) {
   assert(Success && "Expected the check call to be successful!");
 
   auto LoadStorePred = [&](Instruction &I) -> bool {
-    if (isa<LoadInst>(I))
+    if (isa<LoadInst>(I)) {
       getOrCreateAAFor<AAAlign>(
           IRPosition::value(*cast<LoadInst>(I).getPointerOperand()));
-    else
+      if (SimplifyAllLoads)
+        getOrCreateAAFor<AAValueSimplify>(IRPosition::value(I));
+    } else
       getOrCreateAAFor<AAAlign>(
           IRPosition::value(*cast<StoreInst>(I).getPointerOperand()));
     return true;
