@@ -407,6 +407,8 @@ struct OMPInformationCache : public InformationCache {
 
     // TODO: We should attach the attributes defined in OMPKinds.def.
   }
+  /// Get the list of kernels in the module.
+  SmallPtrSetImpl<Kernel> &getKernels() { return Kernels; }
 
   /// Get the list of kernels in the module.
   SmallPtrSetImpl<Kernel> &getKernels() { return Kernels; }
