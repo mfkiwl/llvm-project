@@ -5053,6 +5053,11 @@ struct AAHeapToStackImpl : public AAHeapToStack {
       LLVM_DEBUG(dbgs() << "H2S: Removing malloc call: " << *MallocCall
                         << "\n");
 
+      auto Remark = [&](OptimizationRemark OR) {
+        return OR << "Moving memory allocation from the heap to the stack.";
+      };
+      A.emitRemark<OptimizationRemark>(MallocCall, "HeapToStack", Remark);
+
       Align Alignment;
       Value *Size;
       if (isCallocLikeFn(MallocCall, TLI)) {
