@@ -477,16 +477,11 @@ define i32 @test_lifetime() {
 ; TEST 11
 
 define void @test11() {
-; IS________OPM-LABEL: define {{[^@]+}}@test11() {
-; IS________OPM-NEXT:    [[TMP1:%.*]] = tail call noalias i8* @malloc(i64 noundef 4)
-; IS________OPM-NEXT:    tail call void @sync_will_return(i8* [[TMP1]]) #[[ATTR6]]
-; IS________OPM-NEXT:    tail call void @free(i8* nocapture [[TMP1]])
-; IS________OPM-NEXT:    ret void
-;
-; IS________NPM-LABEL: define {{[^@]+}}@test11() {
-; IS________NPM-NEXT:    [[TMP1:%.*]] = alloca i8, i64 4, align 1
-; IS________NPM-NEXT:    tail call void @sync_will_return(i8* [[TMP1]]) #[[ATTR6]]
-; IS________NPM-NEXT:    ret void
+; CHECK-LABEL: define {{[^@]+}}@test11() {
+; CHECK-NEXT:    [[TMP1:%.*]] = tail call noalias i8* @malloc(i64 noundef 4)
+; CHECK-NEXT:    tail call void @sync_will_return(i8* [[TMP1]]) #[[ATTR6]]
+; CHECK-NEXT:    tail call void @free(i8* nocapture [[TMP1]])
+; CHECK-NEXT:    ret void
 ;
   %1 = tail call noalias i8* @malloc(i64 4)
   tail call void @sync_will_return(i8* %1)
