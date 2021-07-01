@@ -47,7 +47,7 @@ EXTERN void __kmpc_barrier(kmp_Ident *loc_ref, int32_t tid) {
             "Expected SPMD mode with uninitialized runtime.");
     __kmpc_barrier_simple_spmd(loc_ref, tid);
   } else {
-    tid = GetLogicalThreadIdInBlock(checkSPMDMode(loc_ref));
+    tid = GetLogicalThreadIdInBlock();
     int numberOfActiveOMPThreads =
         GetNumberOfOmpThreads(checkSPMDMode(loc_ref));
     if (numberOfActiveOMPThreads > 1) {
