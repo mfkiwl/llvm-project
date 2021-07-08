@@ -5010,6 +5010,20 @@ struct AAHeapToStackFunction final : public AAHeapToStack {
     return false;
   }
 
+  bool isAssumedHeapToStackRemovedFree(CallBase &CB) const override {
+    if (isValidState())
+      for (auto &It : AllocationInfos) {
+        AllocationInfo &AI = *It.second;
+        if (AI.Status == AllocationInfo::INVALID)
+          continue;
+
+        if (AI.PotentialFreeCalls.count(&CB))
+          return true;
+      }
+
+    return false;
+  }
+
   ChangeStatus manifest(Attributor &A) override {
     assert(getState().isValidState() &&
            "Attempted to manifest an invalid state!");

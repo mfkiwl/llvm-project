@@ -2550,6 +2550,13 @@ struct AAHeapToShared : public StateWrapper<BooleanState, AbstractAttribute> {
   static AAHeapToShared &createForPosition(const IRPosition &IRP,
                                            Attributor &A);
 
+  /// Returns true if HeapToShared conversion is assumed to be possible.
+  virtual bool isAssumedHeapToShared(CallBase &CB) const = 0;
+
+  /// Returns true if HeapToShared conversion is assumed and the CB is a
+  /// callsite to a free operation to be removed.
+  virtual bool isAssumedHeapToSharedRemovedFree(CallBase &CB) const = 0;
+
   /// See AbstractAttribute::getName().
   const std::string getName() const override { return "AAHeapToShared"; }
 
@@ -2578,6 +2585,27 @@ struct AAHeapToSharedFunction : public AAHeapToShared {
   /// See AbstractAttribute::trackStatistics().
   void trackStatistics() const override {}
 
+  void findPotentialRemovedFreeCalls(Attributor &A) {
+    auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+    auto &FreeRFI = OMPInfoCache.RFIs[OMPRTL___kmpc_free_shared];
+
+    PotentialRemovedFreeCalls.clear();
+    // Update free call users of found malloc calls.
+    for (CallBase *CB : MallocCalls) {
+      SmallVector<CallBase *, 4> FreeCalls;
+      for (auto *U : CB->users()) {
+        CallBase *C = dyn_cast<CallBase>(U);
+        if (C && C->getCalledFunction() == FreeRFI.Declaration)
+          FreeCalls.push_back(C);
+      }
+      // TODO: Do we need to assume there is one, unique free user?
+      if (FreeCalls.size() != 1)
+        continue;
+
+      PotentialRemovedFreeCalls.insert(FreeCalls.front());
+    }
+  }
+
   void initialize(Attributor &A) override {
     auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
     auto &RFI = OMPInfoCache.RFIs[OMPRTL___kmpc_alloc_shared];
@@ -2585,6 +2613,23 @@ struct AAHeapToSharedFunction : public AAHeapToShared {
     for (User *U : RFI.Declaration->users())
       if (CallBase *CB = dyn_cast<CallBase>(U))
         MallocCalls.insert(CB);
+
+    findPotentialRemovedFreeCalls(A);
+  }
+
+  bool isAssumedHeapToShared(CallBase &CB) const {
+    if (isValidState())
+      if (MallocCalls.count(&CB))
+        return true;
+
+    return false;
+  }
+
+  bool isAssumedHeapToSharedRemovedFree(CallBase &CB) const {
+    if (isValidState())
+      if (PotentialRemovedFreeCalls.count(&CB))
+        return true;
+    return false;
   }
 
   ChangeStatus manifest(Attributor &A) override {
@@ -2673,6 +2718,8 @@ struct AAHeapToSharedFunction : public AAHeapToShared {
           MallocCalls.erase(CB);
     }
 
+    findPotentialRemovedFreeCalls(A);
+
     if (NumMallocCalls != MallocCalls.size())
       return ChangeStatus::CHANGED;
 
@@ -2681,6 +2728,8 @@ struct AAHeapToSharedFunction : public AAHeapToShared {
 
   /// Collection of all malloc calls in a function.
   SmallPtrSet<CallBase *, 4> MallocCalls;
+  /// Collection of potentially removed free calls in a function.
+  SmallPtrSet<CallBase *, 4> PotentialRemovedFreeCalls;
 };
 
 struct AAKernelInfo : public StateWrapper<KernelInfoState, AbstractAttribute> {
@@ -3435,6 +3484,10 @@ struct AAKernelInfoCallSite : AAKernelInfo {
       SPMDCompatibilityTracker.insert(&CB);
       ReachedUnknownParallelRegions.insert(&CB);
       break;
+    case OMPRTL___kmpc_alloc_shared:
+    case OMPRTL___kmpc_free_shared:
+      // Return without setting a fixpoint, to be resolved in updateImpl.
+      return;
     default:
       // Unknown OpenMP runtime calls cannot be executed in SPMD-mode,
       // generally.
@@ -3453,12 +3506,54 @@ struct AAKernelInfoCallSite : AAKernelInfo {
     //       sense to specialize attributes for call sites arguments instead of
     //       redirecting requests to the callee argument.
     Function *F = getAssociatedFunction();
-    const IRPosition &FnPos = IRPosition::function(*F);
-    auto &FnAA = A.getAAFor<AAKernelInfo>(*this, FnPos, DepClassTy::REQUIRED);
-    if (getState() == FnAA.getState())
-      return ChangeStatus::UNCHANGED;
-    getState() = FnAA.getState();
-    return ChangeStatus::CHANGED;
+
+    auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+    const auto &It = OMPInfoCache.RuntimeFunctionIDMap.find(F);
+
+    // If F is not a runtime function, propagate the AAKernelInfo of the callee.
+    if (It == OMPInfoCache.RuntimeFunctionIDMap.end()) {
+      const IRPosition &FnPos = IRPosition::function(*F);
+      auto &FnAA = A.getAAFor<AAKernelInfo>(*this, FnPos, DepClassTy::REQUIRED);
+      if (getState() == FnAA.getState())
+        return ChangeStatus::UNCHANGED;
+      getState() = FnAA.getState();
+      return ChangeStatus::CHANGED;
+    }
+
+    // F is a runtime function that allocates or frees memory, check
+    // AAHeapToStack and AAHeapToShared.
+    KernelInfoState StateBefore = getState();
+    assert(It->getSecond() == OMPRTL___kmpc_alloc_shared ||
+           It->getSecond() == OMPRTL___kmpc_free_shared);
+
+    CallBase &CB = cast<CallBase>(getAssociatedValue());
+
+    auto &HeapToStackAA = A.getAAFor<AAHeapToStack>(
+        *this, IRPosition::function(*CB.getCaller()), DepClassTy::OPTIONAL);
+    auto &HeapToSharedAA = A.getAAFor<AAHeapToShared>(
+        *this, IRPosition::function(*CB.getCaller()), DepClassTy::OPTIONAL);
+
+    RuntimeFunction RF = It->getSecond();
+
+    switch (RF) {
+    // If neither HeapToStack nor HeapToShared assume the call is removed,
+    // assume SPMD incompatibility.
+    case OMPRTL___kmpc_alloc_shared:
+      if (!HeapToStackAA.isAssumedHeapToStack(CB) &&
+          !HeapToSharedAA.isAssumedHeapToShared(CB))
+        SPMDCompatibilityTracker.insert(&CB);
+      break;
+    case OMPRTL___kmpc_free_shared:
+      if (!HeapToStackAA.isAssumedHeapToStackRemovedFree(CB) &&
+          !HeapToSharedAA.isAssumedHeapToSharedRemovedFree(CB))
+        SPMDCompatibilityTracker.insert(&CB);
+      break;
+    default:
+      SPMDCompatibilityTracker.insert(&CB);
+    }
+
+    return StateBefore == getState() ? ChangeStatus::UNCHANGED
+                                     : ChangeStatus::CHANGED;
   }
 };
 
