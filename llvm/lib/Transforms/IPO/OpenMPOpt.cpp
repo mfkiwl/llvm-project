@@ -488,7 +488,10 @@ struct KernelInfoState : AbstractState {
   /// State to track if we are in SPMD-mode, assumed or know, and why we decided
   /// we cannot be. If it is assumed, then RequiresFullRuntime should also be
   /// false.
-  BooleanStateWithPtrSetVector<Instruction> SPMDCompatibilityTracker;
+  //BooleanStateWithPtrSetVector<Instruction> SPMDCompatibilityTracker;
+  #if 1
+  BooleanStateWithPtrSetVector<Instruction, false> SPMDCompatibilityTracker;
+  #endif
 
   /// The __kmpc_target_init call in this kernel, if any. If we find more than
   /// one we abort as the kernel is malformed.
@@ -730,6 +733,14 @@ struct OpenMPOpt {
         }
       }
     }
+
+    #if 1
+    if (Changed) {
+      errs() << "=== Dump Module\n";
+      M.dump();
+      errs() << "=== End of Dump Module\n";
+    }
+    #endif
 
     return Changed;
   }
@@ -1574,13 +1585,32 @@ private:
             continue;
 
           auto Remark = [&](OptimizationRemark OR) {
-            return OR << "OpenMP runtime call "
-                      << ore::NV("OpenMPOptRuntime", RFI.Name)
-                      << " moved to beginning of OpenMP region";
+            OR << "OpenMP runtime call "
+               << ore::NV("OpenMPOptRuntime", RFI.Name);
+            if (isKernel(F))
+              OR << " moved after target initialization of the OpenMP target "
+                 "region";
+            else
+              OR << " moved to beginning of OpenMP region";
+            return OR;
           };
           emitRemark<OptimizationRemark>(&F, "OpenMPRuntimeCodeMotion", Remark);
 
-          CI->moveBefore(&*F.getEntryBlock().getFirstInsertionPt());
+          // If the function is a kernel, dedup will move
+          // the runtime call right after the kernel init callsite. Otherwise,
+          // it will move it to the beginning of the caller function.
+          if (isKernel(F)) {
+            auto &KernelInitRFI = OMPInfoCache.RFIs[OMPRTL___kmpc_target_init];
+            auto *KernelInitUV = KernelInitRFI.getUseVector(F);
+            assert(KernelInitUV->size() == 1 && "Expected a single __kmpc_target_init in kernel\n");
+
+            CallInst *KernelInitCI = getCallIfRegularCall(*KernelInitUV->front(), &KernelInitRFI);
+            assert(KernelInitCI && "Expected a call to __kmpc_target_init in kernel\n");
+
+            CI->moveAfter(KernelInitCI);
+          }
+          else
+            CI->moveBefore(&*F.getEntryBlock().getFirstInsertionPt());
           ReplVal = CI;
           break;
         }
@@ -2864,6 +2894,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
       } else {
         UsedAssumedInformation = false;
       }
+      //errs() << "IsSPMDModeSimplifyCB -> " << SPMDCompatibilityTracker.isAssumed() << "\n";
       auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
                                        SPMDCompatibilityTracker.isAssumed());
       return Val;
@@ -2885,6 +2916,8 @@ struct AAKernelInfoFunction : AAKernelInfo {
       } else {
         UsedAssumedInformation = false;
       }
+
+      //errs() << "IsGenericModeSimplifyCB-> " << !SPMDCompatibilityTracker.isAssumed() << "\n";
       auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
                                        !SPMDCompatibilityTracker.isAssumed());
       return Val;
@@ -2955,6 +2988,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
                      " to the called function '"
                   << F->getName() << "'";
           }
+          errs() << "=== SIDE-EFFECT I\n";
+          NonCompatibleI->dump();
+          errs() << "=== End of SIDE-EFFECT I\n";
           return ORA << ".";
         };
         A.emitRemark<OptimizationRemarkAnalysis>(
@@ -2966,6 +3002,182 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
       return false;
     }
+
+#if 1
+    auto CreateGuardedRegion = [&](Instruction *RegionStartI,
+                                   Instruction *RegionEndI) {
+      LoopInfo *LI = nullptr;
+      DominatorTree *DT = nullptr;
+      MemorySSAUpdater *MSU = nullptr;
+      using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+
+      BasicBlock *ParentBB = RegionStartI->getParent();
+      Function *Fn = ParentBB->getParent();
+      Module &M = *Fn->getParent();
+
+      // Create all the blocks and logic.
+      // ParentBB:
+      //    GTid = __kmpc_global_thread_num()
+      //    if (GTid == 0)
+      //        goto RegionStartBB
+      //    else
+      //        goto RegionBarrierBB
+      // RegionStartBB:
+      //        <execute guarded instructions>
+      //        goto RegionEndBB
+      // RegionEndBB:
+      //        <store escaping values to shared mem>
+      //        goto RegionBarrierBB
+      //  RegionBarrierBB:
+      //    __kmpc_simple_barrier_spmd()
+      //    goto RegionExitBB
+      // RegionExitBB:
+      //    <...load escaping values from shared mem before users...>
+      //    <non-guarded instructions>
+      //
+      BasicBlock *RegionEndBB =
+          SplitBlock(ParentBB, RegionEndI->getNextNode(), DT, LI, MSU, "region.guarded.end");
+      BasicBlock *RegionBarrierBB =
+          SplitBlock(RegionEndBB, &*RegionEndBB->getFirstInsertionPt(), DT, LI, MSU, "region.barrier");
+      BasicBlock *RegionExitBB =
+      SplitBlock(RegionBarrierBB, &*RegionBarrierBB->getFirstInsertionPt(), DT,
+                 LI, MSU, "region.exit");
+      BasicBlock *RegionStartBB =
+          SplitBlock(ParentBB, RegionStartI, DT, LI, MSU, "region.guarded");
+
+      //errs() << "=== 0 Dump function\n";
+      //Fn->dump();
+      //errs() << "=== 0 End of Dump function\n";
+
+      assert(ParentBB->getUniqueSuccessor() == RegionStartBB &&
+             "Expected a different CFG");
+
+#if 1
+      // Find escaping outputs from the guarded region to outside users and
+      // broadcast their values to them.
+      for (Instruction &I : *RegionStartBB) {
+        SmallPtrSet<Instruction *, 4> OutsideUsers;
+        for (User *Usr : I.users()) {
+          Instruction &UsrI = *cast<Instruction>(Usr);
+          if (UsrI.getParent() != RegionStartBB)
+            OutsideUsers.insert(&UsrI);
+        }
+
+        if (OutsideUsers.empty())
+          continue;
+
+        // Emit a global variable in shared memory to store the broadcasted
+        // value.
+        auto *SharedMem = new GlobalVariable(
+            M, I.getType(), /* IsConstant */ false, GlobalValue::InternalLinkage,
+            UndefValue::get(I.getType()), I.getName() + ".guarded.output.alloc", nullptr,
+            GlobalValue::NotThreadLocal,
+            static_cast<unsigned>(AddressSpace::Shared));
+
+        // Emit a store instruction to update the value.
+        new StoreInst(&I, SharedMem, RegionEndBB->getTerminator());
+
+        LoadInst *LoadI = new LoadInst(
+            I.getType(), SharedMem, I.getName() + ".guarded.output.load", RegionBarrierBB->getTerminator());
+        // Emit a load instruction and replace uses of the output value.
+        for (Instruction *UsrI : OutsideUsers) {
+          UsrI->replaceUsesOfWith(&I, LoadI);
+        }
+      }
+      #endif
+
+      const DebugLoc DL = ParentBB->getTerminator()->getDebugLoc();
+      ParentBB->getTerminator()->eraseFromParent();
+      OpenMPIRBuilder::LocationDescription Loc(
+          InsertPointTy(ParentBB, ParentBB->end()), DL);
+
+      auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+
+      OMPInfoCache.OMPBuilder.updateToLocation(Loc);
+      auto *SrcLocStr = OMPInfoCache.OMPBuilder.getOrCreateSrcLocStr(Loc);
+      Value *Ident = OMPInfoCache.OMPBuilder.getOrCreateIdent(SrcLocStr);
+      //Value *GTid = OMPInfoCache.OMPBuilder.getOrCreateThreadID(Ident);
+      FunctionCallee HardwareTidFn =
+          OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_get_hardware_thread_id_in_block);
+      Value *GTid =
+          OMPInfoCache.OMPBuilder.Builder.CreateCall(HardwareTidFn, {});
+      Value *GTidCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(GTid);
+      OMPInfoCache.OMPBuilder.Builder
+          .CreateCondBr(GTidCheck, RegionStartBB, RegionBarrierBB)
+          ->setDebugLoc(DL);
+
+      // First barrier to ensure main threads has updated broadcast values;
+      FunctionCallee BarrierFn =
+          OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_barrier_simple_spmd);
+      OMPInfoCache.OMPBuilder.updateToLocation(
+        InsertPointTy(RegionBarrierBB, RegionBarrierBB->getFirstInsertionPt()));
+      OMPInfoCache.OMPBuilder.Builder.CreateCall(BarrierFn, {Ident, GTid})
+          ->setDebugLoc(DL);
+
+      // Second barrier to ensure workers have read broadcast values.
+      CallInst::Create(BarrierFn, {Ident, GTid}, "", RegionBarrierBB->getTerminator())
+        ->setDebugLoc(DL);
+
+      //errs() << "=== Dump function\n";
+      //Fn->dump();
+      //errs() << "=== End of Dump function\n";
+    };
+
+    SmallPtrSet<BasicBlock *, 4> GuardedBasicBlocks;
+    SmallVector<std::pair<Instruction *, Instruction *>, 4> GuardedRegions;
+
+    for (Instruction *GuardedI : SPMDCompatibilityTracker) {
+      errs() << "=== F " << getAnchorScope()->getName() << " GuardedI in "
+             << GuardedI->getFunction()->getName() << "\n";
+      GuardedI->dump();
+      BasicBlock *BB = GuardedI->getParent();
+      //errs() << "BB: " << BB->getName() << "\n";
+      errs() << "=== End of GuardedI\n";
+      // Continue if instructions in this BB have been already guarded.
+      if (GuardedBasicBlocks.count(BB)) {
+        //errs() << "=== Skip already handled BB " << BB->getName() << "\n";
+        continue;
+      }
+
+      GuardedBasicBlocks.insert(BB);
+      Instruction *GuardedRegionStart = nullptr, *GuardedRegionEnd = nullptr;
+      for (Instruction &I : *BB) {
+        // If instruction I needs to be guarded update the guarded region
+        // bounds.
+        if (SPMDCompatibilityTracker.contains(&I)) {
+          if (GuardedRegionStart)
+            GuardedRegionEnd = &I;
+          else
+            GuardedRegionStart = GuardedRegionEnd = &I;
+
+          continue;
+        }
+
+        // Instruction I does not need guarding, store
+        // any region found and reset bounds.
+        if (GuardedRegionStart) {
+          GuardedRegions.push_back(
+              std::make_pair(GuardedRegionStart, GuardedRegionEnd));
+          GuardedRegionStart = nullptr;
+          GuardedRegionEnd = nullptr;
+        }
+      }
+    }
+
+    for (auto &GR : GuardedRegions) {
+      //errs() << "=== Start of Guarded Region\n";
+      //errs() << "=== Guarded Region Start\n";
+      //GR.first->dump();
+      //errs() << "=== Guarded Region End\n";
+      //GR.second->dump();
+      #if 1
+      CreateGuardedRegion(GR.first, GR.second);
+      #endif
+      //errs() << "=== End of Guarded Region\n";
+    }
+    #endif
 
     // Adjust the global exec mode flag that tells the runtime what mode this
     // kernel is executed in.
@@ -3009,6 +3221,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     };
     A.emitRemark<OptimizationRemark>(KernelInitCB, "OpenMPKernelSPMDMode",
                                      Remark);
+    errs() << "=== Dump module after SPMDization\n";
+    Kernel->getParent()->dump();
+    errs() << "=== Dump module after SPMDization\n";
     return true;
   };
 
@@ -3482,8 +3697,10 @@ struct AAKernelInfoCallSite : AAKernelInfo {
     case OMPRTL___kmpc_omp_task:
       // We do not look into tasks right now, just give up.
       SPMDCompatibilityTracker.insert(&CB);
+      SPMDCompatibilityTracker.indicatePessimisticFixpoint();
       ReachedUnknownParallelRegions.insert(&CB);
-      break;
+      //break;
+      return;
     case OMPRTL___kmpc_alloc_shared:
     case OMPRTL___kmpc_free_shared:
       // Return without setting a fixpoint, to be resolved in updateImpl.
