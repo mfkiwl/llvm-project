@@ -1786,7 +1786,16 @@ Function *Attributor::internalizeFunction(Function &F, bool Force) {
       Copied->addMetadata(MDIt.first, *MDIt.second);
 
   M.getFunctionList().insert(F.getIterator(), Copied);
-  F.replaceAllUsesWith(Copied);
+
+  // Replace all uses except those in llvm.used, llvm.compiler.used global
+  // variables.
+  auto ShouldReplace = [&](Use &U) {
+    return !isa<GlobalValue>(U.getUser()) ||
+           (cast<GlobalValue>(U.getUser())->getName() != "llvm.used" &&
+            cast<GlobalValue>(U.getUser())->getName() != "llvm.compiler.used");
+  };
+
+  F.replaceUsesWithIf(Copied, ShouldReplace);
   Copied->setDSOLocal(true);
 
   return Copied;
