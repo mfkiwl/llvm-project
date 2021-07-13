@@ -1468,6 +1468,12 @@ struct Attributor {
   /// triggers deletion of trivially dead istructions.
   void deleteAfterManifest(BasicBlock &BB) { ToBeDeletedBlocks.insert(&BB); }
 
+  // Record that \p BB is added during the manifest of an AA. Added basic blocks
+  // are preserved in the IR.
+  void registerManifestAddedBasicBlock(BasicBlock &BB) {
+    ManifestAddedBlocks.insert(&BB);
+  }
+
   /// Record that \p F is deleted after information was manifested.
   void deleteAfterManifest(Function &F) {
     if (DeleteFns)
@@ -1947,6 +1953,7 @@ private:
   ///{
   SmallPtrSet<Function *, 8> ToBeDeletedFunctions;
   SmallPtrSet<BasicBlock *, 8> ToBeDeletedBlocks;
+  SmallPtrSet<BasicBlock *, 8> ManifestAddedBlocks;
   SmallDenseSet<WeakVH, 8> ToBeDeletedInsts;
   ///}
 
