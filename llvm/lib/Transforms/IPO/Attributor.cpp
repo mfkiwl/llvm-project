@@ -776,6 +776,9 @@ bool Attributor::isAssumedDead(const Instruction &I,
   const IRPosition::CallBaseContext *CBCtx =
       QueryingAA ? QueryingAA->getCallBaseContext() : nullptr;
 
+  if (ManifestAddedBlocks.contains(I.getParent()))
+    return false;
+
   if (!FnLivenessAA)
     FnLivenessAA =
         lookupAAFor<AAIsDead>(IRPosition::function(*I.getFunction(), CBCtx),
