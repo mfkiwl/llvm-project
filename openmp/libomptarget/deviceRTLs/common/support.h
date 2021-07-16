@@ -22,13 +22,14 @@
 enum ExecutionMode {
   Spmd = 0x00u,
   Generic = 0x01u,
-  ModeMask = 0x01u,
+  SpmdGuarded = 0x02u,
+  ModeMask = 0x03u,
 };
 
 enum RuntimeMode {
   RuntimeInitialized = 0x00u,
-  RuntimeUninitialized = 0x02u,
-  RuntimeMask = 0x02u,
+  RuntimeUninitialized = 0x04u,
+  RuntimeMask = 0x04u,
 };
 
 void setExecutionParameters(ExecutionMode EMode, RuntimeMode RMode);
