@@ -158,7 +158,13 @@ static void __kmpc_spmd_kernel_deinit(bool RequiresFullRuntime) {
 
 // Return true if the current target region is executed in SPMD mode.
 EXTERN int8_t __kmpc_is_spmd_exec_mode() {
-  return (execution_param & ModeMask) == Spmd;
+  return ((execution_param & ModeMask) == Spmd ||
+          (execution_param & ModeMask) == SpmdGuarded);
+}
+
+EXTERN __attribute__((used,retain)) int8_t __kmpc_is_spmd_guarded_exec_mode() {
+  printf("isGuarded %d\n", ((execution_param & ModeMask) == SpmdGuarded));
+  return (execution_param & ModeMask) == SpmdGuarded;
 }
 
 EXTERN int8_t __kmpc_is_generic_main_thread(kmp_int32 Tid) {
