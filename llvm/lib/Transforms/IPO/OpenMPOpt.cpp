@@ -36,6 +36,7 @@
 #include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/CallGraphUpdater.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/CodeExtractor.h"
 
 using namespace llvm;
@@ -736,9 +737,9 @@ struct OpenMPOpt {
 
     #if 1
     if (Changed) {
-      errs() << "=== Dump Module\n";
+      dbgs() << "=== Dump Module IsModulePass " << IsModulePass << "\n";
       M.dump();
-      errs() << "=== End of Dump Module\n";
+      dbgs() << "=== End of Dump Module IsModulePass " << IsModulePass << "\n";
     }
     #endif
 
@@ -2806,6 +2807,12 @@ struct AAKernelInfoFunction : AAKernelInfo {
   AAKernelInfoFunction(const IRPosition &IRP, Attributor &A)
       : AAKernelInfo(IRP, A) {}
 
+  SmallPtrSet<Instruction*, 4> GuardedInstructions;
+
+  SmallPtrSetImpl<Instruction *> &getGuardedInstructions() {
+    return GuardedInstructions;
+  }
+
   /// See AbstractAttribute::initialize(...).
   void initialize(Attributor &A) override {
     // This is a high-level transform that might change the constant arguments
@@ -2967,8 +2974,10 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
     // If we can we change the execution mode to SPMD-mode otherwise we build a
     // custom state machine.
-    if (!changeToSPMDMode(A))
-      buildCustomStateMachine(A);
+    if (!changeToSPMDMode(A)) {
+      assert(false && "Should never reach for testing\n");
+      //buildCustomStateMachine(A);
+    }
 
     return ChangeStatus::CHANGED;
   }
@@ -3013,6 +3022,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
       BasicBlock *ParentBB = RegionStartI->getParent();
       Function *Fn = ParentBB->getParent();
+      dbgs() << "CreateGuardedRegion at " << ParentBB->getName() << " from I "
+             << *RegionStartI << " to " << *RegionEndI << " in F "
+             << Fn->getName() << "\n";
       Module &M = *Fn->getParent();
 
       // Create all the blocks and logic.
@@ -3035,22 +3047,47 @@ struct AAKernelInfoFunction : AAKernelInfo {
       //    <...load escaping values from shared mem before users...>
       //    <non-guarded instructions>
       //
+      //errs() << "=== 0 Dump function\n";
+      //Fn->dump();
+      //errs() << "=== 0 End of Dump function\n";
+
       BasicBlock *RegionEndBB =
           SplitBlock(ParentBB, RegionEndI->getNextNode(), DT, LI, MSU, "region.guarded.end");
       BasicBlock *RegionBarrierBB =
           SplitBlock(RegionEndBB, &*RegionEndBB->getFirstInsertionPt(), DT, LI, MSU, "region.barrier");
       BasicBlock *RegionExitBB =
-      SplitBlock(RegionBarrierBB, &*RegionBarrierBB->getFirstInsertionPt(), DT,
-                 LI, MSU, "region.exit");
+          SplitBlock(RegionBarrierBB, &*RegionBarrierBB->getFirstInsertionPt(),
+                     DT, LI, MSU, "region.exit");
       BasicBlock *RegionStartBB =
           SplitBlock(ParentBB, RegionStartI, DT, LI, MSU, "region.guarded");
+      dbgs() << "Split " << ParentBB->getName() << " create RegionStart at "
+             << RegionStartBB->getName() << "\n";
 
-      //errs() << "=== 0 Dump function\n";
-      //Fn->dump();
-      //errs() << "=== 0 End of Dump function\n";
+      // Create a clone that contains an non-guarded version for parallel
+      // execution.
+      ValueToValueMapTy VMap;
+      BasicBlock *RegionNotguardedBB =
+          CloneBasicBlock(RegionStartBB, VMap, ".not");
+      RegionNotguardedBB->insertInto(Fn, RegionStartBB);
+      RegionNotguardedBB->getTerminator()->setSuccessor(0, RegionExitBB);
 
       assert(ParentBB->getUniqueSuccessor() == RegionStartBB &&
              "Expected a different CFG");
+
+      BasicBlock *RegionCheckTidBB =
+          SplitBlock(ParentBB, ParentBB->getTerminator(), DT, LI, MSU, "region.check.tid");
+
+      // Register basic blocks with the Attributor.
+      A.registerManifestAddedBasicBlock(*RegionEndBB);
+      A.registerManifestAddedBasicBlock(*RegionBarrierBB);
+      A.registerManifestAddedBasicBlock(*RegionExitBB);
+      A.registerManifestAddedBasicBlock(*RegionStartBB);
+      A.registerManifestAddedBasicBlock(*RegionCheckTidBB);
+      A.registerManifestAddedBasicBlock(*RegionNotguardedBB);
+
+      //errs() << "=== 1 Dump function\n";
+      //Fn->dump();
+      //errs() << "=== 1 End of Dump function\n";
 
 #if 1
       // Find escaping outputs from the guarded region to outside users and
@@ -3059,8 +3096,12 @@ struct AAKernelInfoFunction : AAKernelInfo {
         SmallPtrSet<Instruction *, 4> OutsideUsers;
         for (User *Usr : I.users()) {
           Instruction &UsrI = *cast<Instruction>(Usr);
-          if (UsrI.getParent() != RegionStartBB)
+          if (UsrI.getParent() != RegionStartBB) {
+            dbgs() << "For I " << I << " in BB " << I.getParent()->getName()
+                   << " found outside user UsrI " << UsrI << " in BB "
+                   << UsrI.getParent()->getName() << "\n";
             OutsideUsers.insert(&UsrI);
+          }
         }
 
         if (OutsideUsers.empty())
@@ -3079,20 +3120,26 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
         LoadInst *LoadI = new LoadInst(
             I.getType(), SharedMem, I.getName() + ".guarded.output.load", RegionBarrierBB->getTerminator());
+
+        PHINode *PN = PHINode::Create(I.getType(), 2, ".phi.guarded", &*RegionExitBB->getFirstInsertionPt());
+        PN->addIncoming(VMap[&I], RegionNotguardedBB);
+        PN->addIncoming(LoadI, RegionBarrierBB);
         // Emit a load instruction and replace uses of the output value.
         for (Instruction *UsrI : OutsideUsers) {
-          UsrI->replaceUsesOfWith(&I, LoadI);
+          dbgs() << "PN " << *PN << " in UsrI " << *UsrI << " in BB " << UsrI->getParent()->getName() << "\n";
+          assert(UsrI->getParent() == RegionExitBB && "Expected escaping users in exit region");
+          UsrI->replaceUsesOfWith(&I, PN);
         }
       }
       #endif
 
+      auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+
+      // Add check for parallel level in ParentBB.
       const DebugLoc DL = ParentBB->getTerminator()->getDebugLoc();
       ParentBB->getTerminator()->eraseFromParent();
       OpenMPIRBuilder::LocationDescription Loc(
           InsertPointTy(ParentBB, ParentBB->end()), DL);
-
-      auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
-
       OMPInfoCache.OMPBuilder.updateToLocation(Loc);
       auto *SrcLocStr = OMPInfoCache.OMPBuilder.getOrCreateSrcLocStr(Loc);
       Value *Ident = OMPInfoCache.OMPBuilder.getOrCreateIdent(SrcLocStr);
@@ -3100,14 +3147,30 @@ struct AAKernelInfoFunction : AAKernelInfo {
       FunctionCallee HardwareTidFn =
           OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
               M, OMPRTL___kmpc_get_hardware_thread_id_in_block);
+      FunctionCallee IsSPMDGuardedFn =
+           M.getFunction("__kmpc_is_spmd_guarded_exec_mode.internalized");
+          //OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+          //    M, OMPRTL___kmpc_is_spmd_guarded_exec_mode);
       Value *GTid =
           OMPInfoCache.OMPBuilder.Builder.CreateCall(HardwareTidFn, {});
+      Value *IsSPMDGuarded =
+          OMPInfoCache.OMPBuilder.Builder.CreateCall(IsSPMDGuardedFn, {});
+      Value *IsSPMDGuardedCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(IsSPMDGuarded);
+      OMPInfoCache.OMPBuilder.Builder
+          .CreateCondBr(IsSPMDGuardedCheck, RegionNotguardedBB, RegionCheckTidBB)
+          ->setDebugLoc(DL);
+
+      // Add check for GTid in RegionCheckTidBB
+      RegionCheckTidBB->getTerminator()->eraseFromParent();
+      OpenMPIRBuilder::LocationDescription LocRegionCheckTid(
+          InsertPointTy(RegionCheckTidBB, RegionCheckTidBB->end()), DL);
+      OMPInfoCache.OMPBuilder.updateToLocation(LocRegionCheckTid);
       Value *GTidCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(GTid);
       OMPInfoCache.OMPBuilder.Builder
           .CreateCondBr(GTidCheck, RegionStartBB, RegionBarrierBB)
           ->setDebugLoc(DL);
 
-      // First barrier to ensure main threads has updated broadcast values;
+      // First barrier to ensure main threads has updated broadcast values.
       FunctionCallee BarrierFn =
           OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
               M, OMPRTL___kmpc_barrier_simple_spmd);
@@ -3120,33 +3183,36 @@ struct AAKernelInfoFunction : AAKernelInfo {
       CallInst::Create(BarrierFn, {Ident, GTid}, "", RegionBarrierBB->getTerminator())
         ->setDebugLoc(DL);
 
-      //errs() << "=== Dump function\n";
-      //Fn->dump();
-      //errs() << "=== End of Dump function\n";
+      errs() << "=== Dump function\n";
+      Fn->dump();
+      errs() << "=== End of Dump function\n";
     };
 
-    SmallPtrSet<BasicBlock *, 4> GuardedBasicBlocks;
+    //SmallPtrSet<BasicBlock *, 4> GuardedBasicBlocks;
     SmallVector<std::pair<Instruction *, Instruction *>, 4> GuardedRegions;
 
     for (Instruction *GuardedI : SPMDCompatibilityTracker) {
-      errs() << "=== F " << getAnchorScope()->getName() << " GuardedI in "
-             << GuardedI->getFunction()->getName() << "\n";
-      GuardedI->dump();
       BasicBlock *BB = GuardedI->getParent();
-      //errs() << "BB: " << BB->getName() << "\n";
+      errs() << "=== F " << getAnchorScope()->getName() << " GuardedI "
+             << *GuardedI << " in  BB " << *BB << " in F "
+             << GuardedI->getFunction()->getName() << "\n";
       errs() << "=== End of GuardedI\n";
+      auto *CalleeAA = A.lookupAAFor<AAKernelInfo>(IRPosition::function(*GuardedI->getFunction()),
+                                                    nullptr, DepClassTy::NONE);
+      assert(CalleeAA != nullptr && "Expected Callee AAKernelInfo");
+      auto &CalleeAAFunction = *cast<AAKernelInfoFunction>(CalleeAA);
       // Continue if instructions in this BB have been already guarded.
-      if (GuardedBasicBlocks.count(BB)) {
-        //errs() << "=== Skip already handled BB " << BB->getName() << "\n";
+      if (CalleeAAFunction.getGuardedInstructions().count(GuardedI)) {
+        errs() << "=== Skip already guarded I " << *GuardedI << "\n";
         continue;
       }
 
-      GuardedBasicBlocks.insert(BB);
       Instruction *GuardedRegionStart = nullptr, *GuardedRegionEnd = nullptr;
       for (Instruction &I : *BB) {
         // If instruction I needs to be guarded update the guarded region
         // bounds.
         if (SPMDCompatibilityTracker.contains(&I)) {
+          CalleeAAFunction.getGuardedInstructions().insert(&I);
           if (GuardedRegionStart)
             GuardedRegionEnd = &I;
           else
@@ -3174,6 +3240,8 @@ struct AAKernelInfoFunction : AAKernelInfo {
       //GR.second->dump();
       #if 1
       CreateGuardedRegion(GR.first, GR.second);
+      #else
+      return false;
       #endif
       //errs() << "=== End of Guarded Region\n";
     }
@@ -3221,9 +3289,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     };
     A.emitRemark<OptimizationRemark>(KernelInitCB, "OpenMPKernelSPMDMode",
                                      Remark);
-    errs() << "=== Dump module after SPMDization\n";
+    dbgs() << "=== Dump module after SPMDization\n";
     Kernel->getParent()->dump();
-    errs() << "=== Dump module after SPMDization\n";
+    dbgs() << "=== End of Dump module after SPMDization\n";
     return true;
   };
 
@@ -3508,8 +3576,11 @@ struct AAKernelInfoFunction : AAKernelInfo {
     // Callback to check a read/write instruction.
     auto CheckRWInst = [&](Instruction &I) {
       // We handle calls later.
-      if (isa<CallBase>(I))
-        return true;
+      if (isa<CallBase>(I)) {
+        dbgs() << "CheckRWInst F " << getAnchorScope()->getName()
+               << "found CB " << I << "\n ";
+            return true;
+      }
       // We only care about write effects.
       if (!I.mayWriteToMemory())
         return true;
@@ -3595,6 +3666,9 @@ struct AAKernelInfoCallSite : AAKernelInfo {
 
     CallBase &CB = cast<CallBase>(getAssociatedValue());
     Function *Callee = getAssociatedFunction();
+
+    dbgs() << "AAKernelInfoCallSite CB " << CB << " in "
+           << CB.getParent()->getParent()->getName() << "\n";
 
     // Helper to lookup an assumption string.
     auto HasAssumption = [](Function *Fn, StringRef AssumptionStr) {
@@ -4107,9 +4181,11 @@ AAKernelInfo &AAKernelInfo::createForPosition(const IRPosition &IRP,
   case IRPosition::IRP_CALL_SITE_ARGUMENT:
     llvm_unreachable("KernelInfo can only be created for function position!");
   case IRPosition::IRP_CALL_SITE:
+    dbgs() << "New AAKernelInfo for CS V " << IRP.getAnchorValue() << "\n";
     AA = new (A.Allocator) AAKernelInfoCallSite(IRP, A);
     break;
   case IRPosition::IRP_FUNCTION:
+    dbgs() << "New AAKernelInfo for Function V " << IRP.getAnchorValue() << "\n";
     AA = new (A.Allocator) AAKernelInfoFunction(IRP, A);
     break;
   }
@@ -4169,14 +4245,17 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
   // allows iterprocedural passes to see every call edge.
   DenseSet<const Function *> InternalizedFuncs;
   if (isOpenMPDevice(M))
-    for (Function &F : M)
+    for (Function &F : M) {
+      dbgs() << "Check F " << F.getName() << " for internalization\n";
       if (!F.isDeclaration() && !Kernels.contains(&F) && IsCalled(F)) {
+        dbgs() << "Internalize function " << F.getName() << "\n";
         if (Attributor::internalizeFunction(F, /* Force */ true)) {
           InternalizedFuncs.insert(&F);
         } else if (!F.hasLocalLinkage() && !F.hasFnAttribute(Attribute::Cold)) {
           EmitRemark(F);
         }
       }
+    }
 
   // Look at every function in the Module unless it was internalized.
   SmallVector<Function *, 16> SCC;
