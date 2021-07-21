@@ -5010,6 +5010,13 @@ struct AAHeapToStackFunction final : public AAHeapToStack {
     return false;
   }
 
+  bool isAssumedHeapToStack(const CallBase &CB) const override {
+    if (isValidState())
+      if (AllocationInfo *AI = AllocationInfos.lookup(&CB))
+        return AI->Status != AllocationInfo::INVALID;
+    return false;
+  }
+
   bool isAssumedHeapToStackRemovedFree(CallBase &CB) const override {
     if (isValidState())
       for (auto &It : AllocationInfos) {
