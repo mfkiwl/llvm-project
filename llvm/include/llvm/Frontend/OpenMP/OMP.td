@@ -66,6 +66,7 @@ def OMPC_ProcBind : Clause<"proc_bind"> {
 def OMPC_Schedule : Clause<"schedule"> { let clangClass = "OMPScheduleClause"; }
 def OMPC_Ordered : Clause<"ordered"> { let clangClass = "OMPOrderedClause"; }
 def OMPC_NoWait : Clause<"nowait"> { let clangClass = "OMPNowaitClause"; }
+def OMPC_Apollo : Clause<"apollo"> { let clangClass = "OMPApolloClause"; }
 def OMPC_Untied : Clause<"untied"> { let clangClass = "OMPUntiedClause"; }
 def OMPC_Mergeable : Clause<"mergeable"> {
   let clangClass = "OMPMergeableClause";
@@ -214,6 +215,7 @@ def OMP_Parallel : Directive<"parallel"> {
     VersionedClause<OMPC_If>,
     VersionedClause<OMPC_NumThreads>,
     VersionedClause<OMPC_ProcBind>,
+    VersionedClause<OMPC_Apollo>,
   ];
 }
 def OMP_Task : Directive<"task"> {
@@ -539,7 +541,8 @@ def OMP_ParallelFor : Directive<"parallel for"> {
     VersionedClause<OMPC_Ordered>,
     VersionedClause<OMPC_Linear>,
     VersionedClause<OMPC_Allocate>,
-    VersionedClause<OMPC_Order, 50>
+    VersionedClause<OMPC_Order, 50>,
+    VersionedClause<OMPC_Apollo>
   ];
 }
 def OMP_ParallelDo : Directive<"parallel do"> {

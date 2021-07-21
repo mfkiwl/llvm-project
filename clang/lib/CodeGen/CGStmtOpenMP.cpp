@@ -1550,6 +1550,10 @@ static void emitCommonOMPParallelDirective(
     }
   }
 
+  bool EnableApollo = false;
+  if (S.getSingleClause<OMPApolloClause>())
+    EnableApollo = true;
+
   OMPParallelScope Scope(CGF, S);
   llvm::SmallVector<llvm::Value *, 16> CapturedVars;
   // Combining 'distribute' with 'for' requires sharing each 'distribute' chunk
@@ -1559,7 +1563,7 @@ static void emitCommonOMPParallelDirective(
   CodeGenBoundParameters(CGF, S, CapturedVars);
   CGF.GenerateOpenMPCapturedVars(*CS, CapturedVars);
   CGF.CGM.getOpenMPRuntime().emitParallelCall(CGF, S.getBeginLoc(), OutlinedFn,
-                                              CapturedVars, IfCond);
+                                              CapturedVars, IfCond, EnableApollo);
 }
 
 static void emitEmptyBoundParameters(CodeGenFunction &,
@@ -5266,6 +5270,7 @@ static void emitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,
   case OMPC_schedule:
   case OMPC_ordered:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_threadprivate:
   case OMPC_depend:

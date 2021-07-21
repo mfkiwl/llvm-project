@@ -5432,6 +5432,7 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
       case OMPC_copyin:
       case OMPC_copyprivate:
       case OMPC_nowait:
+      case OMPC_apollo:
       case OMPC_untied:
       case OMPC_mergeable:
       case OMPC_allocate:
@@ -11682,6 +11683,7 @@ OMPClause *Sema::ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind, Expr *Expr,
   case OMPC_copyin:
   case OMPC_copyprivate:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -12445,6 +12447,7 @@ static OpenMPDirectiveKind getOpenMPCaptureRegionForClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -12883,6 +12886,7 @@ OMPClause *Sema::ActOnOpenMPSimpleClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -13122,6 +13126,7 @@ OMPClause *Sema::ActOnOpenMPSingleExprWithArgClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -13298,6 +13303,9 @@ OMPClause *Sema::ActOnOpenMPClause(OpenMPClauseKind Kind,
   case OMPC_nowait:
     Res = ActOnOpenMPNowaitClause(StartLoc, EndLoc);
     break;
+  case OMPC_apollo:
+    Res = ActOnOpenMPApolloClause(StartLoc, EndLoc);
+    break;
   case OMPC_untied:
     Res = ActOnOpenMPUntiedClause(StartLoc, EndLoc);
     break;
@@ -13418,6 +13426,11 @@ OMPClause *Sema::ActOnOpenMPNowaitClause(SourceLocation StartLoc,
                                          SourceLocation EndLoc) {
   DSAStack->setNowaitRegion();
   return new (Context) OMPNowaitClause(StartLoc, EndLoc);
+}
+
+OMPClause *Sema::ActOnOpenMPApolloClause(SourceLocation StartLoc,
+                                         SourceLocation EndLoc) {
+  return new (Context) OMPApolloClause(StartLoc, EndLoc);
 }
 
 OMPClause *Sema::ActOnOpenMPUntiedClause(SourceLocation StartLoc,
@@ -13645,6 +13658,7 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
   case OMPC_schedule:
   case OMPC_ordered:
   case OMPC_nowait:
+  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:

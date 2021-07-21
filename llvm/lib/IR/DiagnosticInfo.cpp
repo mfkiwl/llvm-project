@@ -134,7 +134,7 @@ std::string DiagnosticLocation::getAbsolutePath() const {
   if (sys::path::is_absolute(Name))
     return std::string(Name);
 
-  SmallString<128> Path;
+  SmallString<1024> Path;
   sys::path::append(Path, File->getDirectory(), Name);
   return sys::path::remove_leading_dotslash(Path).str();
 }

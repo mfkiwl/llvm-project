@@ -6230,6 +6230,8 @@ void OMPClauseWriter::VisitOMPOrderedClause(OMPOrderedClause *C) {
 
 void OMPClauseWriter::VisitOMPNowaitClause(OMPNowaitClause *) {}
 
+void OMPClauseWriter::VisitOMPApolloClause(OMPApolloClause *) {}
+
 void OMPClauseWriter::VisitOMPUntiedClause(OMPUntiedClause *) {}
 
 void OMPClauseWriter::VisitOMPMergeableClause(OMPMergeableClause *) {}

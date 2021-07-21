@@ -273,7 +273,7 @@ public:
   void emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                         llvm::Function *OutlinedFn,
                         ArrayRef<llvm::Value *> CapturedVars,
-                        const Expr *IfCond) override;
+                        const Expr *IfCond, bool EnableApollo=false) override;
 
   /// Emit an implicit/explicit barrier for OpenMP threads.
   /// \param Kind Directive for which this implicit barrier call must be

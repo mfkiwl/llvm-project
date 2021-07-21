@@ -33,6 +33,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/AtomicOrdering.h"
 #include "llvm/Support/Format.h"
@@ -2120,12 +2121,13 @@ void CGOpenMPRuntime::emitIfClause(CodeGenFunction &CGF, const Expr *Cond,
 void CGOpenMPRuntime::emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                                        llvm::Function *OutlinedFn,
                                        ArrayRef<llvm::Value *> CapturedVars,
-                                       const Expr *IfCond) {
+                                       const Expr *IfCond,
+                                       bool EnableApollo) {
   if (!CGF.HaveInsertPoint())
     return;
   llvm::Value *RTLoc = emitUpdateLocation(CGF, Loc);
   auto &M = CGM.getModule();
-  auto &&ThenGen = [&M, OutlinedFn, CapturedVars, RTLoc,
+  auto &&ThenGen = [&M, OutlinedFn, CapturedVars, RTLoc, EnableApollo,
                     this](CodeGenFunction &CGF, PrePostActionTy &) {
     // Build call __kmpc_fork_call(loc, n, microtask, var1, .., varn);
     CGOpenMPRuntime &RT = CGF.CGM.getOpenMPRuntime();
@@ -2139,7 +2141,11 @@ void CGOpenMPRuntime::emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
 
     llvm::FunctionCallee RTLFn =
         OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_fork_call);
-    CGF.EmitRuntimeCall(RTLFn, RealArgs);
+    auto *CI = CGF.EmitRuntimeCall(RTLFn, RealArgs);
+    if (EnableApollo) {
+      llvm::Metadata *MD[] = {llvm::MDString::get(M.getContext(), "apollo")};
+      CI->setMetadata("metadata.apollo", llvm::MDNode::get(M.getContext(), MD));
+    }
   };
   auto &&ElseGen = [&M, OutlinedFn, CapturedVars, RTLoc, Loc,
                     this](CodeGenFunction &CGF, PrePostActionTy &) {
@@ -11741,7 +11747,7 @@ void CGOpenMPSIMDRuntime::emitParallelCall(CodeGenFunction &CGF,
                                            SourceLocation Loc,
                                            llvm::Function *OutlinedFn,
                                            ArrayRef<llvm::Value *> CapturedVars,
-                                           const Expr *IfCond) {
+                                           const Expr *IfCond, bool EnableApollo) {
   llvm_unreachable("Not supported in SIMD-only mode");
 }
 

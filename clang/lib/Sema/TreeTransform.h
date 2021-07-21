@@ -9092,6 +9092,13 @@ TreeTransform<Derived>::TransformOMPNowaitClause(OMPNowaitClause *C) {
 
 template <typename Derived>
 OMPClause *
+TreeTransform<Derived>::TransformOMPApolloClause(OMPApolloClause *C) {
+  // No need to rebuild this clause, no template-dependent parameters.
+  return C;
+}
+
+template <typename Derived>
+OMPClause *
 TreeTransform<Derived>::TransformOMPUntiedClause(OMPUntiedClause *C) {
   // No need to rebuild this clause, no template-dependent parameters.
   return C;

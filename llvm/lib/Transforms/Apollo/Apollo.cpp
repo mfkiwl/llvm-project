@@ -39,12 +39,16 @@ cl::list<unsigned> NumThreadsList("apollo-omp-numthreads", cl::CommaSeparated,
                              cl::desc("Num threads for OpenMP tuning"),
                              cl::value_desc("1, 2, 3, ..."), cl::OneOrMore);
 
+#define EnumAttr(Kind) Attribute::get(Ctx, Attribute::AttrKind::Kind)
+#define AttributeSet(...)                                                      \
+  AttributeSet::get(Ctx, ArrayRef<Attribute>({__VA_ARGS__}))
+
 namespace {
 struct Apollo : public ModulePass {
   static char ID;
   bool Changed = false;
   static bool HasRun;
-  static unsigned RegionID;
+  static unsigned RegionCount;
   Apollo() : ModulePass(ID) {}
 
   bool runOnModule(Module &M) override {
@@ -53,24 +57,40 @@ struct Apollo : public ModulePass {
 
     HasRun = true;
 
-    IRBuilder<> IRB(M.getContext());
+    LLVMContext &Ctx = M.getContext();
+    IRBuilder<> IRB(Ctx);
     OpenMPIRBuilder OMPIRB(M);
     OMPIRB.initialize();
 
     FunctionCallee ApolloRegionCreate = M.getOrInsertFunction(
-        "__apollo_region_create", IRB.getInt8PtrTy(), IRB.getInt32Ty(),
-        IRB.getInt8PtrTy(), IRB.getInt32Ty());
+        "__apollo_region_create",
+        AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                           AttributeSet(), {}),
+        IRB.getInt8PtrTy(), IRB.getInt32Ty(), IRB.getInt8PtrTy(),
+        IRB.getInt32Ty());
     FunctionCallee ApolloRegionBegin = M.getOrInsertFunction(
-        "__apollo_region_begin", IRB.getVoidTy(), IRB.getInt8PtrTy());
+        "__apollo_region_begin",
+        AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                           AttributeSet(), {}),
+        IRB.getVoidTy(), IRB.getInt8PtrTy());
     FunctionCallee ApolloRegionSetFeature =
-        M.getOrInsertFunction("__apollo_region_set_feature", IRB.getVoidTy(),
+        M.getOrInsertFunction("__apollo_region_set_feature",
+        AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                           AttributeSet(), {}),
+        IRB.getVoidTy(),
                               IRB.getInt8PtrTy(), IRB.getFloatTy());
     FunctionCallee ApolloGetPolicy = M.getOrInsertFunction(
-        "__apollo_region_get_policy", IRB.getInt32Ty(), IRB.getInt8PtrTy());
+        "__apollo_region_get_policy",
+        AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                           AttributeSet(), {}),
+        IRB.getInt32Ty(), IRB.getInt8PtrTy());
     FunctionCallee ApolloRegionEnd = M.getOrInsertFunction(
-        "__apollo_region_end", IRB.getVoidTy(), IRB.getInt8PtrTy());
+        "__apollo_region_end",
+        AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                           AttributeSet(), {}),
+        IRB.getVoidTy(), IRB.getInt8PtrTy());
 
-    DenseMap<CallInst *, SmallVector<SmallVector<CallInst *, 1>, 1>>
+    DenseMap<CallBase *, SmallVector<SmallVector<CallBase *, 4>, 4>>
         ForkCItoLoopInitCI;
 
     auto OMPLoopIDs = {
@@ -78,6 +98,10 @@ struct Apollo : public ModulePass {
         OMPRTL___kmpc_for_static_init_4u,
         OMPRTL___kmpc_for_static_init_8,
         OMPRTL___kmpc_for_static_init_8u,
+        OMPRTL___kmpc_dispatch_init_4,
+        OMPRTL___kmpc_dispatch_init_4u,
+        OMPRTL___kmpc_dispatch_init_8,
+        OMPRTL___kmpc_dispatch_init_8u,
     };
 
     // Find all calls parallel for init populate a map from
@@ -89,7 +113,7 @@ struct Apollo : public ModulePass {
 
       errs() << "Found FUNCTION " << F->getName() << "\n";
       for (User *U : F->users()) {
-        CallInst *LoopInitCI = dyn_cast<CallInst>(U);
+        CallBase *LoopInitCI = dyn_cast<CallBase>(U);
         if (!LoopInitCI)
           continue;
 
@@ -98,41 +122,65 @@ struct Apollo : public ModulePass {
 
         // Find the AbstractCallSite fork call user and the callpath leading
         // to the parallel for init call
-        CallInst *ForkCI = nullptr;
-        SmallVector<CallInst *, 1> Callpath;
+        CallBase *ForkCI = nullptr;
+        SmallVector<CallBase *, 4> Callpath;
         Callpath.clear();
+        errs() << "Init push " << *LoopInitCI << "\n";
         Callpath.push_back(LoopInitCI);
+
         auto FindFork = [&](Function *F, auto &self) -> void {
           for (Use &U : F->uses()) {
             errs() << "User U " << *U.getUser() << "\n";
-            CallInst *CI = dyn_cast<CallInst>(U.getUser());
+            CallBase *CI = dyn_cast<CallBase>(U.getUser());
             // If found a direct call, recurse to find the fork callback.
             if (CI) {
+              errs() << "Push " << *CI << "\n";
               Callpath.push_back(CI);
               self(CI->getFunction(), self);
+              // Pop up the call to continue on a different callpath.
+              Callpath.pop_back();
             }
             AbstractCallSite ACS(&U);
             if (!ACS || !ACS.isCallbackCall())
               continue;
 
-            ForkCI = dyn_cast<CallInst>(ACS.getInstruction());
-            errs() << "ForkCI callee" << ForkCI->getCalledFunction()->getName()
-                   << "\n";
+            ForkCI = dyn_cast<CallBase>(ACS.getInstruction());
+            errs() << "ForkCI " << *ForkCI << "\n";
+            MDNode *MD = ForkCI->getMetadata("metadata.apollo");
+            if (!MD)
+              return;
+
+            errs() << "=== MD\n";
+            if (MD)
+              MD->dump();
+            errs() << "=== End of MD\n";
             assert(ForkCI->getCalledFunction() ==
                        OMPIRB.getOrCreateRuntimeFunctionPtr(
                            OMPRTL___kmpc_fork_call) &&
                    "Must call OpenMP fork call");
+            // Add the callpath to the ForkCI callsite.
+            ForkCItoLoopInitCI[ForkCI].push_back(Callpath);
           }
         };
 
+        errs() << "FindFork caller " << Caller->getName() << " <- LoopInit " << *LoopInitCI << "\n";
         FindFork(Caller, FindFork);
-        // Ignore dangling parallel for calls
-        if (!ForkCI)
-          continue;
-
-        assert(ForkCI != nullptr);
-        ForkCItoLoopInitCI[ForkCI].push_back(Callpath);
       }
+    }
+
+    for (auto &Iter : ForkCItoLoopInitCI) {
+      CallBase *ForkCI = Iter.first;
+      errs() << "===\n";
+      errs() << "ForkCI " << *ForkCI << "\n";
+      std::string nest = "";
+      for (SmallVector<CallBase *, 4> Callpath : Iter.second) {
+        errs() << "Callpath!\n";
+        for (CallBase *Call : reverse(Callpath)) {
+          nest += "\t";
+          errs() << nest << " Call " << *Call << "\n";
+        }
+      }
+      errs() << "~~~\n";
     }
 
     // Instrument fork call and set features using the iteration count of each
@@ -142,41 +190,38 @@ struct Apollo : public ModulePass {
       const unsigned CallbackFirstArgOperand = 3;
       const unsigned CalleeFirstArgNo = 2;
 
-      const unsigned UpperBoundArgNo = 5;
-
       Changed = true;
 
-      CallInst *ForkCI = Iter.first;
-      SmallVector<SmallVector<CallInst *, 1>, 1> &LoopInitCIVector =
+      CallBase *ForkCI = Iter.first;
+      SmallVector<SmallVector<CallBase *, 4>, 4> &LoopInitCIVector =
           Iter.second;
 
       // Inject __apollo_region_create using a GV to store the handle if
       // it does not exist
       IRB.SetInsertPoint(ForkCI);
       Constant *SrcLocStr = nullptr;
-      // TODO: Use debug information when available for naming?
-      /*
-      IRB.SetCurrentDebugLocation(ForkCI->getDebugLoc());
-      DILocation *DI = ForkCI->getDebugLoc().get();
-      errs() << "DI " << *DI << "\n";
-      if(DI)
-        SrcLocStr = OMPIRB.getOrCreateSrcLocStr(IRB);
-      else
-      */
+
+      std::string ModuleSubstr = M.getName().str();
+      ModuleSubstr = ModuleSubstr.substr(ModuleSubstr.find_last_of("/") + 1);
+          //(M.getName().size() > 32) ? M.getName().size() - 32 : 0);
+     std::string RegionID;
+     // Use the line number for the ID if it is available.
+     if (ForkCI->getDebugLoc())
+      RegionID = "l" + std::to_string(ForkCI->getDebugLoc().getLine());
+     else
+      RegionID = "n" + std::to_string(RegionCount);
+      //RegionID = Twine("l").concat(Twine(ForkCI->getDebugLoc().getLine()));
      // Get last 32 chars of Module name
-      std::string ModuleSubstr = M.getName().str().substr(
-          (M.getName().size() > 32) ? M.getName().size() - 32 : 0);
       SrcLocStr = IRB.CreateGlobalStringPtr(
-          /*demangle(ForkCI->getFunction()->getName().str()) + */
-          ModuleSubstr + ".apollo.region." + Twine(RegionID).str());
+          ModuleSubstr + ".apollo.region." + RegionID);
 
       assert(SrcLocStr != nullptr);
-      errs() << "SrcLocStr " << *SrcLocStr << "\n";
+      errs() << "SrcLocStr " << ModuleSubstr << "\n";
       GlobalVariable *GV =
           new GlobalVariable(M, IRB.getInt8PtrTy(), /*isConstant=*/false,
                              GlobalValue::PrivateLinkage,
                              ConstantPointerNull::get(IRB.getInt8PtrTy()),
-                             ".apollo.region.handle." + Twine(RegionID));
+                             ".apollo.region.handle." + Twine(RegionCount));
       GV->setUnnamedAddr(GlobalValue::UnnamedAddr::Global);
       GV->setAlignment(Align(8));
 
@@ -185,7 +230,7 @@ struct Apollo : public ModulePass {
       Instruction *ThenTI =
           SplitBlockAndInsertIfThen(Cond, ForkCI, /*Unreachable=*/false);
       IRB.SetInsertPoint(ThenTI);
-      CallInst *ApolloRegionCreateCI = IRB.CreateCall(
+      CallBase *ApolloRegionCreateCI = IRB.CreateCall(
           ApolloRegionCreate, {IRB.getInt32(LoopInitCIVector.size()), SrcLocStr,
                                // +1 to include the default case 0
                                IRB.getInt32(NumThreadsList.size() + 1)});
@@ -198,43 +243,40 @@ struct Apollo : public ModulePass {
 
       // Move instruction slices before fork call to calculate number of
       // iterations of each loop as features.
-      for (SmallVector<CallInst *, 1> Callpath : LoopInitCIVector) {
+      for (SmallVector<CallBase *, 4> Callpath : LoopInitCIVector) {
         // Set of visited instructions for fast lookup.
         SmallPtrSet<Instruction *, 8> InstructionSet;
-        // Slice of instructions in reverse order.
-        SmallVector<Instruction *, 8> InstructionSliceReverse;
+        // The complete instruction backtrace.
+        SmallVector<Instruction *, 8> InstructionBacktrace;
         Value *UB = nullptr;
 
         // Unpeel the callpath and slice instructions.
-        for (CallInst *CI : Callpath) {
-          errs() << "CI " << *CI << "\n";
+        for (CallBase *CI : Callpath) {
+          errs() << "Callpath CI " << *CI << "\n";
+
+          // Slice of instructions.
+          SmallVector<Instruction *, 8> InstructionSlice;
 
           DominatorTree DT(*CI->getFunction());
           int count = 1;
 
-          // Slice instructions based on Value V up to Insturction LimitI.
-          auto Slice = [&](Value *V, Instruction *LimitI, auto &self) -> void {
+          // Slice instructions based on Value V
+          auto Slice = [&](Value *V, auto &self) -> void {
             Instruction *I = dyn_cast<Instruction>(V);
-            if (!I)
-              return;
-
-            // Instruction has been added, but we need to bump it up
-            // the slice since it may be an operand of another 
-            // instruction
-            if (InstructionSet.count(I)) {
-              for(auto it=InstructionSliceReverse.begin(); it!=InstructionSliceReverse.end(); it++) {
-                if(*it != I)
-                  continue;
-                InstructionSliceReverse.erase(it);
-                InstructionSliceReverse.push_back(I);
-                errs() << "Bump I " << *I << "\n";
-                break;
-              }
+            if (!I) {
+              errs() << "Not an Instruction " << *V << " return\n";
+              //for(User *U : V->users())
+              //  errs() << "User of V " << *V << " <- " << *U << "\n";
               return;
             }
 
+            if (InstructionSet.count(I))
+              return;
+
             errs() << "Follow I " << *I << "\n";
             InstructionSet.insert(I);
+            InstructionSlice.push_back(I);
+            errs() << "Added Value I " << *I << "\n";
 
             for (User *U : V->users()) {
               Instruction *II = dyn_cast<Instruction>(U);
@@ -246,23 +288,26 @@ struct Apollo : public ModulePass {
                 continue;
               if (!DT.dominates(II, CI))
                 continue;
+              if (II == I)
+                continue;
 
-              errs() << count << " >>>>>>>>>>>>>>>>>>>>>>>>>>>> RECURSE I "
-                     << *II << "\n";
+              errs() << count
+                     << " >>> Users User of I " << *I
+                     << " -> " << *II << "\n";
               count++;
-              self(II, LimitI, self);
+              self(II, self);
               count--;
-              errs() << count << " <<<<<<<<<<<<<<<<<<<<<<<<<<<<\n";
+              errs() << count << " <<<\n";
             }
 
-            InstructionSliceReverse.push_back(I);
-            errs() << "Added Value I " << *I << "\n";
-            errs() << count << " >>>>>>>>>>>>>>>>>>>>>>>>>>>>\n";
-            errs() << count << " <<<<<<<<<<<<<<<<<<<<<<<<<<<<\n";
+            errs() << count << "<<<\n";
 
             for (Value *V : I->operand_values()) {
-              errs() << "Found OpI " << *V << "\n";
-              self(V, LimitI, self);
+              errs() << "I " << *I << " Found OpI " << *V << "\n";
+              // Do not follow self operand.
+              if(V == I)
+                continue;
+              self(V, self);
             }
           };
 
@@ -270,16 +315,85 @@ struct Apollo : public ModulePass {
           // the upper bound number of iterations to use as feature and slice
           // based to that.
           if (CI == Callpath.front()) {
+            Function *Callee = CI->getCalledFunction();
+            unsigned UpperBoundArgNo;
+            // Set the UB argument number for static scheduling.
+            if (Callee == OMPIRB.getOrCreateRuntimeFunctionPtr(
+                              OMPRTL___kmpc_for_static_init_4) ||
+                Callee == OMPIRB.getOrCreateRuntimeFunctionPtr(
+                              OMPRTL___kmpc_for_static_init_4u) ||
+                Callee == OMPIRB.getOrCreateRuntimeFunctionPtr(
+                              OMPRTL___kmpc_for_static_init_8) ||
+                Callee == OMPIRB.getOrCreateRuntimeFunctionPtr(
+                              OMPRTL___kmpc_for_static_init_8u))
+              UpperBoundArgNo = 5;
+            // Set the UB argument number for dynamic, runtime scheduling.
+            else
+              UpperBoundArgNo = 4;
+
             UB = CI->getArgOperand(UpperBoundArgNo);
             errs() << "UB " << *UB << "\n";
-            Slice(UB, CI, Slice);
+            Slice(UB, Slice);
           } else {
-            for (unsigned i = 0; i < CI->getNumArgOperands(); ++i) {
-              Value *V = CI->getArgOperand(i);
-              errs() << "Arg " << *V << "\n";
-              Slice(V, CI, Slice);
+            errs() << "=== CI Func\n";
+            CI->getParent()->getParent()->dump();
+            errs() << "=== End of CI Func\n";
+            Function *Callee = CI->getCalledFunction();
+            SmallPtrSet<Instruction *, 8> CallpathSet(Callpath.begin(),
+                                                      Callpath.end());
+
+            for (unsigned ArgNo = 0, NumArgs = Callee->arg_size();
+                 ArgNo < NumArgs; ++ArgNo) {
+              auto *A = Callee->getArg(ArgNo);
+              errs() << "Arg " << *A << "\n";
+              for (User *U : A->users()) {
+                errs() << "User of A " << *A << " <- " << *U << "\n";
+
+                Instruction *I = dyn_cast<Instruction>(U);
+
+                if (!I)
+                  continue;
+
+                if (!InstructionSet.count(I) && !CallpathSet.count(I)) {
+                  errs() << "DID NOT find " << *U
+                         << " in InstructionSet or CallpathSet\n";
+                  continue;
+                }
+
+                errs() << "FOUND USER in InstructionSet or CallpathSet!\n";
+                Value *V = CI->getArgOperand(ArgNo);
+                errs() << "Arg Value " << *V << "\n";
+                Slice(V, Slice);
+              }
             }
           }
+
+          // Sort slice.
+          llvm::sort(InstructionSlice.begin(),
+                     InstructionSlice.end(),
+                     [&DT](Instruction *A, Instruction *B) {
+                       return DT.dominates(A, B);
+                     });
+
+          errs() << "=== CURRENT SLICE\n";
+          for (auto It = InstructionSlice.begin();
+               It < InstructionSlice.end(); ++It) {
+            Instruction *I = *It;
+            errs() << "I " << *I << "\n";
+          }
+          errs() << "=== END OF CURRENT SLICE\n";
+
+          InstructionBacktrace.insert(InstructionBacktrace.begin(),
+                                      InstructionSlice.begin(),
+                                      InstructionSlice.end());
+
+          errs() << "=== CURRENT BACKTRACE\n";
+          for (auto It = InstructionBacktrace.begin();
+               It < InstructionBacktrace.end(); ++It) {
+            Instruction *I = *It;
+            errs() << "I " << *I << "\n";
+          }
+          errs() << "=== END OF CURRENT BACKTRACE\n";
         }
 
         assert(UB != nullptr);
@@ -291,8 +405,7 @@ struct Apollo : public ModulePass {
         // to be used by sliced instruction cloning.
         Function *Callee = dyn_cast<Function>(
             ForkCI->getArgOperand(CallbackCalleeOperand)->stripPointerCasts());
-        errs() << "Callee " << Callee->getName() << "\n";
-        errs() << "Forwarding " << *ForkCI << " -> " << Callee->getName()
+        errs() << "ForkCI Forwarding " << *ForkCI << " -> " << Callee->getName()
                << "\n";
         // TODO: generalize for callbacks using metadata for argument list
         // Set the mappings between arguments in the outlined to the callback.
@@ -302,12 +415,10 @@ struct Apollo : public ModulePass {
           errs() << "Mapping arg " << *Callee->getArg(uu) << " -> "
                  << *ForkCI->getArgOperand(u) << "\n";
           VMap[Callee->getArg(uu)] = ForkCI->getArgOperand(u);
-          errs() << "Mapping arg " << *Callee->getArg(uu) << " -> "
-                 << *VMap[Callee->getArg(uu)] << "\n";
         }
 
         // Map arguments in the Callpath used by sliced instruction cloning.
-        for (CallInst *CI : reverse(Callpath)) {
+        for (CallBase *CI : reverse(Callpath)) {
           Function *Callee = CI->getCalledFunction();
           errs() << "Forwarding " << *CI << " -> " << Callee->getName() << "\n";
           for (unsigned i = 0; i < Callee->arg_size(); i++) {
@@ -321,54 +432,105 @@ struct Apollo : public ModulePass {
           }
         }
 
+        errs() << "=== INSTRUCTIONS\n";
+        for (auto It = InstructionBacktrace.begin();
+             It < InstructionBacktrace.end(); ++It) {
+          Instruction *I = *It;
+          errs() << "I " << *I << "\n";
+        }
+        errs() << "=== END OF INSTRUCTIONS\n";
         // Clone instructions and remap them. Note inserting clones and
         // remapping them is correct, because instructions insert in program
         // order
         Value *UBClone = nullptr;
-        for (auto It = InstructionSliceReverse.rbegin();
-             It < InstructionSliceReverse.rend(); ++It) {
+        for (auto It = InstructionBacktrace.begin();
+             It < InstructionBacktrace.end(); ++It) {
           Instruction *I = *It;
           errs() << "Slice I " << *I << "\n";
-          Instruction *CloneI = I->clone();
-          VMap[I] = CloneI;
-          // Update value map for nested instructions clones in the Callpath.
-          for (auto It : VMap) {
-            const Value *Key = It.first;
-            Value *Val = It.second;
-            if (Val == I)
-              VMap[Key] = CloneI;
+
+          if (PHINode *P = dyn_cast<PHINode>(I)) {
+            errs() << "Found PHI!\n";
+            Value *V = P->getIncomingValue(0);
+            assert(VMap[V] && "Expected value to be mapped");
+            VMap[I] = VMap[V];
+            continue;
           }
+
+          Instruction *CloneI = I->clone();
+
           Instruction *UBI = dyn_cast<Instruction>(UB);
 
           // Store the upper bound clone to create the feature
           if (UBI == I)
             UBClone = CloneI;
 
+          //for(auto It : VMap) {
+          //  const Value *Key = It.first;
+          //  Value *Val = It.second;
+          //  errs() << "VMAP[ " << *Key << " ] -> " << *Val << "\n";
+          //}
           // TODO: Ignore missing locals or not?
           // TODO: No module level changes?
           RemapInstruction(
               CloneI, VMap
               /*, RF_NoModuleLevelChanges | RF_IgnoreMissingLocals*/);
-          IRB.Insert(CloneI);
+
+          //auto *F = IRB.GetInsertBlock()->getParent();
+          //errs() << "=== Function\n";
+          //F->dump();
+          //errs() << "=== End of Function\n";
+
+          if (I->hasName())
+            IRB.Insert(CloneI, I->getName() + ".apollo.slice");
+          else if (!I->getType()->isVoidTy())
+            IRB.Insert(CloneI, "tmp.apollo.slice");
+          else
+            IRB.Insert(CloneI);
+
+          VMap[I] = CloneI;
+          errs() << "Self remap " << *I << " -> " << *CloneI << "\n";
+
+          // Update value map for nested instructions clones in the Callpath.
+          for (auto It : VMap) {
+            const Value *Key = It.first;
+            Value *Val = It.second;
+            if (Val == I) {
+              errs() << "Remap " << *Key << " -> " << *CloneI << "\n";
+              VMap[Key] = CloneI;
+            }
+          }
+
           errs() << "CloneI " << *CloneI << "\n\n";
         }
 
         assert(UBClone != nullptr);
 
         errs() << "UBClone I " << *UBClone << "\n";
-        PointerType *UBPointerType = dyn_cast<PointerType>(UBClone->getType());
-        assert(UBPointerType);
-        Type *UBType = UBPointerType->getElementType();
+
+        Value *IntNumIters = nullptr;
+        Type *UBType = UBClone->getType();
         errs() << "UBClone Type " << *UBType << "\n";
-        LoadInst *LoadI = IRB.CreateLoad(UBType, UBClone);
-        Value *IntNumIters = IRB.CreateAdd(LoadI, ConstantInt::get(UBType, 1));
+        // UB clone is pointer in static scheduling.
+        if (UBType->isPointerTy()) {
+          //UBType = dyn_cast<PointerType>(UBType)->getElementType();
+          errs() << "Pointer UBClone Element Type " << *UBType->getPointerElementType() << "\n";
+          Value *UBValue = IRB.CreateLoad(UBType->getPointerElementType(), UBClone);
+          IntNumIters = IRB.CreateAdd(UBValue, ConstantInt::get(UBType->getPointerElementType(), 1));
+        }
+        // UB clone is a scalar in dynamic scheduling.
+        else
+          IntNumIters = IRB.CreateAdd(UBClone, ConstantInt::get(UBType, 1));
+
+        assert(IntNumIters && "Expected non-null IntNumIters");
         Value *FloatNumIters = IRB.CreateUIToFP(IntNumIters, IRB.getFloatTy());
         IRB.CreateCall(ApolloRegionSetFeature,
                        {IRB.CreateLoad(GV), FloatNumIters});
       }
       errs() << "ForkCI " << *ForkCI << "\n";
 
-      CallInst *ApolloGetPolicyCI =
+      errs() << "====================== END OF RESULT ==========================\n";
+
+      CallBase *ApolloGetPolicyCI =
           IRB.CreateCall(ApolloGetPolicy, {IRB.CreateLoad(GV)});
 
       BasicBlock *ForkBB = SplitBlock(ForkCI->getParent(), ForkCI);
@@ -382,7 +544,7 @@ struct Apollo : public ModulePass {
 
       auto CreateCase = [&](int CaseNo, int NumThreads) {
         BasicBlock *Case =
-            BasicBlock::Create(M.getContext(), ".apollo.case." + Twine(CaseNo),
+            BasicBlock::Create(Ctx, ".apollo.case." + Twine(CaseNo),
                                ForkBB->getParent(), ForkBB);
         IRB.SetInsertPoint(Case);
         OMPIRB.updateToLocation(IRB);
@@ -412,7 +574,7 @@ struct Apollo : public ModulePass {
       IRB.SetInsertPoint(ForkCI->getNextNode());
       IRB.CreateCall(ApolloRegionEnd, {IRB.CreateLoad(GV)});
 
-      RegionID++;
+      RegionCount++;
       ApolloOpenMPRegionsInstrumented++;
     }
 
@@ -428,7 +590,7 @@ struct Apollo : public ModulePass {
 } // namespace
 
 bool Apollo::HasRun = false;
-unsigned Apollo::RegionID = 1;
+unsigned Apollo::RegionCount = 1;
 char Apollo::ID = 0;
 static RegisterPass<Apollo> X("apollo", "Apollo instrumentation module pass");
 

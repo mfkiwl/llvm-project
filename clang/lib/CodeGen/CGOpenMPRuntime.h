@@ -975,7 +975,8 @@ public:
   virtual void emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                                 llvm::Function *OutlinedFn,
                                 ArrayRef<llvm::Value *> CapturedVars,
-                                const Expr *IfCond);
+                                const Expr *IfCond,
+                                bool EnableApollo=false);
 
   /// Emits a critical region.
   /// \param CriticalName Name of the critical region.
@@ -1921,7 +1922,7 @@ public:
   void emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                         llvm::Function *OutlinedFn,
                         ArrayRef<llvm::Value *> CapturedVars,
-                        const Expr *IfCond) override;
+                        const Expr *IfCond, bool EnableApollo) override;
 
   /// Emits a critical region.
   /// \param CriticalName Name of the critical region.
