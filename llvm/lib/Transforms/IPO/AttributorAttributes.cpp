@@ -4453,10 +4453,17 @@ struct AAValueSimplifyImpl : AAValueSimplify {
   bool checkAndUpdate(Attributor &A, const AbstractAttribute &QueryingAA,
                       const IRPosition &IRP, bool Simplify = true) {
     bool UsedAssumedInformation = false;
+    bool ForceUpdate = false;
     Optional<Value *> QueryingValueSimplified = &IRP.getAssociatedValue();
     if (Simplify)
       QueryingValueSimplified =
-          A.getAssumedSimplified(IRP, QueryingAA, UsedAssumedInformation);
+          A.getAssumedSimplified(IRP, QueryingAA, UsedAssumedInformation, ForceUpdate);
+
+    if (ForceUpdate) {
+      SimplifiedAssociatedValue = QueryingValueSimplified;
+      return true;
+    }
+
     return unionAssumed(QueryingValueSimplified);
   }
 

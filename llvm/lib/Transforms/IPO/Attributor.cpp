@@ -634,8 +634,7 @@ Attributor::getAssumedConstant(const Value &V, const AbstractAttribute &AA,
     Optional<Value *> SimplifiedV = CB(IRP, &AA, UsedAssumedInformation);
     if (!SimplifiedV.hasValue())
       return llvm::None;
-    if (*SimplifiedV && *SimplifiedV != &IRP.getAssociatedValue() &&
-        isa<Constant>(*SimplifiedV))
+    if (*SimplifiedV && isa<Constant>(*SimplifiedV))
       return cast<Constant>(*SimplifiedV);
   }
   const auto &ValueSimplifyAA =
@@ -665,15 +664,20 @@ Attributor::getAssumedConstant(const Value &V, const AbstractAttribute &AA,
 Optional<Value *>
 Attributor::getAssumedSimplified(const IRPosition &IRP,
                                  const AbstractAttribute *AA,
-                                 bool &UsedAssumedInformation) {
+                                 bool &UsedAssumedInformation,
+                                 bool &ForceUpdate) {
   // First check all callbacks provided by outside AAs. If any of them returns
   // a non-null value that is different from the associated value, or None, we
   // assume it's simpliied.
   for (auto &CB : SimplificationCallbacks[IRP]) {
     Optional<Value *> SimplifiedV = CB(IRP, AA, UsedAssumedInformation);
-    if (!SimplifiedV.hasValue() ||
-        (*SimplifiedV && *SimplifiedV != &IRP.getAssociatedValue()))
+    if (!SimplifiedV.hasValue())
       return SimplifiedV;
+
+    if(*SimplifiedV) {
+      ForceUpdate = true;
+      return SimplifiedV;
+    }
   }
 
   // If no high-level/outside simplification occured, use AAValueSimplify.
