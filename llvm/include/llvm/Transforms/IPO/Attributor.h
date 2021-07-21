@@ -1503,14 +1503,29 @@ struct Attributor {
   /// return None, otherwise return `nullptr`.
   Optional<Value *> getAssumedSimplified(const IRPosition &IRP,
                                          const AbstractAttribute &AA,
+                                         bool &UsedAssumedInformation,
+                                         bool &ForceUpdate) {
+    return getAssumedSimplified(IRP, &AA, UsedAssumedInformation, ForceUpdate);
+  }
+  Optional<Value *> getAssumedSimplified(const Value &V,
+                                         const AbstractAttribute &AA,
+                                         bool &UsedAssumedInformation,
+                                         bool &ForceUpdate) {
+    return getAssumedSimplified(IRPosition::value(V), AA,
+                                UsedAssumedInformation, ForceUpdate);
+  }
+  Optional<Value *> getAssumedSimplified(const IRPosition &IRP,
+                                         const AbstractAttribute &AA,
                                          bool &UsedAssumedInformation) {
-    return getAssumedSimplified(IRP, &AA, UsedAssumedInformation);
+    bool ForceUpdate = false;
+    return getAssumedSimplified(IRP, &AA, UsedAssumedInformation, ForceUpdate);
   }
   Optional<Value *> getAssumedSimplified(const Value &V,
                                          const AbstractAttribute &AA,
                                          bool &UsedAssumedInformation) {
+    bool ForceUpdate = false;
     return getAssumedSimplified(IRPosition::value(V), AA,
-                                UsedAssumedInformation);
+                                UsedAssumedInformation, ForceUpdate);
   }
 
   /// Register \p CB as a simplification callback.
@@ -1522,6 +1537,8 @@ struct Attributor {
       const IRPosition &, const AbstractAttribute *, bool &)>;
   void registerSimplificationCallback(const IRPosition &IRP,
                                       const SimplifictionCallbackTy &CB) {
+    assert(SimplificationCallbacks[IRP].size() == 0 &&
+           "Expected a single simplification callback for a given IRP");
     SimplificationCallbacks[IRP].emplace_back(CB);
   }
 
@@ -1535,7 +1552,14 @@ private:
   /// except that it can be used without recording dependences on any \p AA.
   Optional<Value *> getAssumedSimplified(const IRPosition &V,
                                          const AbstractAttribute *AA,
-                                         bool &UsedAssumedInformation);
+                                         bool &UsedAssumedInformation,
+                                         bool &ForceUpdate);
+  Optional<Value *> getAssumedSimplified(const IRPosition &V,
+                                         const AbstractAttribute *AA,
+                                         bool &UsedAssumedInformation) {
+    bool ForceUpdate = false;
+    return getAssumedSimplified(V, AA, UsedAssumedInformation, ForceUpdate);
+  }
 
 public:
   /// Translate \p V from the callee context into the call site context.
