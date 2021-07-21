@@ -417,8 +417,9 @@ EXTERN int32_t __kmpc_cancel(kmp_Ident *loc, int32_t global_tid,
 
 // non standard
 EXTERN int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD,
-                                 bool UseGenericStateMachine,
-                           bool RequiresFullRuntime);
+                                  bool IsSPMDGuarded,
+                                  bool UseGenericStateMachine,
+                                  bool RequiresFullRuntime);
 EXTERN void __kmpc_target_deinit(ident_t *Ident, bool IsSPMD,
                            bool RequiresFullRuntime);
 EXTERN void __kmpc_kernel_prepare_parallel(void *WorkFn);

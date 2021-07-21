@@ -489,10 +489,7 @@ struct KernelInfoState : AbstractState {
   /// State to track if we are in SPMD-mode, assumed or know, and why we decided
   /// we cannot be. If it is assumed, then RequiresFullRuntime should also be
   /// false.
-  //BooleanStateWithPtrSetVector<Instruction> SPMDCompatibilityTracker;
-  #if 1
   BooleanStateWithPtrSetVector<Instruction, false> SPMDCompatibilityTracker;
-  #endif
 
   /// The __kmpc_target_init call in this kernel, if any. If we find more than
   /// one we abort as the kernel is malformed.
@@ -736,7 +733,7 @@ struct OpenMPOpt {
     }
 
     #if 1
-    if (Changed) {
+    if (Changed && IsModulePass) {
       dbgs() << "=== Dump Module IsModulePass " << IsModulePass << "\n";
       M.dump();
       dbgs() << "=== End of Dump Module IsModulePass " << IsModulePass << "\n";
@@ -2892,7 +2889,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
       // __kmpc_target_init or
       // __kmpc_target_deinit call. We will answer this one with the internal
       // state.
-      if (!isValidState())
+      if (!SPMDCompatibilityTracker.isValidState())
         return nullptr;
       if (!SPMDCompatibilityTracker.isAtFixpoint()) {
         if (AA)
@@ -2901,9 +2898,43 @@ struct AAKernelInfoFunction : AAKernelInfo {
       } else {
         UsedAssumedInformation = false;
       }
-      //errs() << "IsSPMDModeSimplifyCB -> " << SPMDCompatibilityTracker.isAssumed() << "\n";
+      dbgs() << "UsedAssumedInformation "
+             << UsedAssumedInformation << " IsSPMDModeSimplifyCB -> "
+             << SPMDCompatibilityTracker.isAssumed() << "\n";
       auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
                                        SPMDCompatibilityTracker.isAssumed());
+      return Val;
+    };
+
+  Attributor::SimplifictionCallbackTy IsSPMDGuardedModeSimplifyCB =
+        [&](const IRPosition &IRP, const AbstractAttribute *AA,
+            bool &UsedAssumedInformation) -> Optional<Value *> {
+      // IRP represents the "SPMDCompatibilityTracker" argument of an
+      // __kmpc_target_init or
+      // __kmpc_target_deinit call. We will answer this one with the internal
+      // state.
+      if (!SPMDCompatibilityTracker.isValidState())
+        return nullptr;
+      if (!SPMDCompatibilityTracker.isAtFixpoint()) {
+        if (AA) {
+          dbgs() << "IsSPMDGuardedModeSimplifyCB Record dep from this " << this->getName() << " to AA " << AA->getName() << "\n";
+          A.recordDependence(*this, *AA, DepClassTy::OPTIONAL);
+        }
+        UsedAssumedInformation = true;
+      } else {
+        UsedAssumedInformation = false;
+      }
+
+      dbgs() << "UsedAssumedInformation " << UsedAssumedInformation
+             << " IsSPMDGuardedModeSimplifyCB -> Assumed "
+             << SPMDCompatibilityTracker.isAssumed() << " NotEmpty "
+             << !SPMDCompatibilityTracker.empty() << " Val "
+             << (SPMDCompatibilityTracker.isAssumed() &&
+                 !SPMDCompatibilityTracker.empty())
+             << "\n";
+      auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
+                                       (SPMDCompatibilityTracker.isAssumed() &&
+                                           !SPMDCompatibilityTracker.empty()));
       return Val;
     };
 
@@ -2914,7 +2945,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
       // __kmpc_target_init or __kmpc_target_deinit call. We will answer this
       // one with the internal state of the SPMDCompatibilityTracker, so if
       // generic then true, if SPMD then false.
-      if (!isValidState())
+      if (!SPMDCompatibilityTracker.isValidState())
         return nullptr;
       if (!SPMDCompatibilityTracker.isAtFixpoint()) {
         if (AA)
@@ -2924,16 +2955,17 @@ struct AAKernelInfoFunction : AAKernelInfo {
         UsedAssumedInformation = false;
       }
 
-      //errs() << "IsGenericModeSimplifyCB-> " << !SPMDCompatibilityTracker.isAssumed() << "\n";
+      //dbgs() << "IsGenericModeSimplifyCB-> " << !SPMDCompatibilityTracker.isAssumed() << "\n";
       auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
                                        !SPMDCompatibilityTracker.isAssumed());
       return Val;
     };
 
     constexpr const int InitIsSPMDArgNo = 1;
+    constexpr const int InitIsSPMDGuardedArgNo = 2;
+    constexpr const int InitUseStateMachineArgNo = 3;
+    constexpr const int InitRequiresFullRuntimeArgNo = 4;
     constexpr const int DeinitIsSPMDArgNo = 1;
-    constexpr const int InitUseStateMachineArgNo = 2;
-    constexpr const int InitRequiresFullRuntimeArgNo = 3;
     constexpr const int DeinitRequiresFullRuntimeArgNo = 2;
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelInitCB, InitUseStateMachineArgNo),
@@ -2941,6 +2973,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelInitCB, InitIsSPMDArgNo),
         IsSPMDModeSimplifyCB);
+    A.registerSimplificationCallback(
+        IRPosition::callsite_argument(*KernelInitCB, InitIsSPMDGuardedArgNo),
+        IsSPMDGuardedModeSimplifyCB);
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelDeinitCB, DeinitIsSPMDArgNo),
         IsSPMDModeSimplifyCB);
@@ -2975,8 +3010,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     // If we can we change the execution mode to SPMD-mode otherwise we build a
     // custom state machine.
     if (!changeToSPMDMode(A)) {
-      assert(false && "Should never reach for testing\n");
+      //assert(false && "Should never reach for testing\n");
       //buildCustomStateMachine(A);
+      return ChangeStatus::UNCHANGED;
     }
 
     return ChangeStatus::CHANGED;
@@ -2997,9 +3033,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
                      " to the called function '"
                   << F->getName() << "'";
           }
-          errs() << "=== SIDE-EFFECT I\n";
+          dbgs() << "=== SIDE-EFFECT I\n";
           NonCompatibleI->dump();
-          errs() << "=== End of SIDE-EFFECT I\n";
+          dbgs() << "=== End of SIDE-EFFECT I\n";
           return ORA << ".";
         };
         A.emitRemark<OptimizationRemarkAnalysis>(
@@ -3012,7 +3048,6 @@ struct AAKernelInfoFunction : AAKernelInfo {
       return false;
     }
 
-#if 1
     auto CreateGuardedRegion = [&](Instruction *RegionStartI,
                                    Instruction *RegionEndI) {
       LoopInfo *LI = nullptr;
@@ -3029,27 +3064,34 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
       // Create all the blocks and logic.
       // ParentBB:
-      //    GTid = __kmpc_global_thread_num()
-      //    if (GTid == 0)
-      //        goto RegionStartBB
-      //    else
+      //    IsSPMDGuarded = __kmpc_is_spmd_guarded_mode()
+      //    if (IsSPMDGuarded)
+      //        goto RegionCheckTidBB
+      // RegionNotguardedBB:
+      //    <execute instructions not guarded>
+      //    goto RegionExitBB
+      // RegionCheckTidBB:
+      //    Tid = __kmpc_hardware_thread_id()
+      //    if (Tid != 0)
       //        goto RegionBarrierBB
       // RegionStartBB:
-      //        <execute guarded instructions>
-      //        goto RegionEndBB
+      //    <execute instructions guarded>
+      //    goto RegionEndBB
       // RegionEndBB:
-      //        <store escaping values to shared mem>
-      //        goto RegionBarrierBB
+      //    <store escaping values to shared mem>
+      //    goto RegionBarrierBB
       //  RegionBarrierBB:
+      //    __kmpc_simple_barrier_spmd()
+      //    // second barrier is omitted if lacking escaping values.
+      //    <load escaping values from shared mem>
       //    __kmpc_simple_barrier_spmd()
       //    goto RegionExitBB
       // RegionExitBB:
-      //    <...load escaping values from shared mem before users...>
-      //    <non-guarded instructions>
+      //    <execute rest of instructions>
       //
-      //errs() << "=== 0 Dump function\n";
+      //dbgs() << "=== 0 Dump function\n";
       //Fn->dump();
-      //errs() << "=== 0 End of Dump function\n";
+      //dbgs() << "=== 0 End of Dump function\n";
 
       BasicBlock *RegionEndBB =
           SplitBlock(ParentBB, RegionEndI->getNextNode(), DT, LI, MSU, "region.guarded.end");
@@ -3085,11 +3127,11 @@ struct AAKernelInfoFunction : AAKernelInfo {
       A.registerManifestAddedBasicBlock(*RegionCheckTidBB);
       A.registerManifestAddedBasicBlock(*RegionNotguardedBB);
 
-      //errs() << "=== 1 Dump function\n";
+      //dbgs() << "=== 1 Dump function\n";
       //Fn->dump();
-      //errs() << "=== 1 End of Dump function\n";
+      //dbgs() << "=== 1 End of Dump function\n";
 
-#if 1
+      bool HasBroadcastValues = false;
       // Find escaping outputs from the guarded region to outside users and
       // broadcast their values to them.
       for (Instruction &I : *RegionStartBB) {
@@ -3106,6 +3148,8 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
         if (OutsideUsers.empty())
           continue;
+
+        HasBroadcastValues = true;
 
         // Emit a global variable in shared memory to store the broadcasted
         // value.
@@ -3131,7 +3175,6 @@ struct AAKernelInfoFunction : AAKernelInfo {
           UsrI->replaceUsesOfWith(&I, PN);
         }
       }
-      #endif
 
       auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
 
@@ -3143,7 +3186,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
       OMPInfoCache.OMPBuilder.updateToLocation(Loc);
       auto *SrcLocStr = OMPInfoCache.OMPBuilder.getOrCreateSrcLocStr(Loc);
       Value *Ident = OMPInfoCache.OMPBuilder.getOrCreateIdent(SrcLocStr);
-      //Value *GTid = OMPInfoCache.OMPBuilder.getOrCreateThreadID(Ident);
+      //Value *Tid = OMPInfoCache.OMPBuilder.getOrCreateThreadID(Ident);
       FunctionCallee HardwareTidFn =
           OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
               M, OMPRTL___kmpc_get_hardware_thread_id_in_block);
@@ -3151,7 +3194,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
            M.getFunction("__kmpc_is_spmd_guarded_exec_mode.internalized");
           //OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
           //    M, OMPRTL___kmpc_is_spmd_guarded_exec_mode);
-      Value *GTid =
+      Value *Tid =
           OMPInfoCache.OMPBuilder.Builder.CreateCall(HardwareTidFn, {});
       Value *IsSPMDGuarded =
           OMPInfoCache.OMPBuilder.Builder.CreateCall(IsSPMDGuardedFn, {});
@@ -3160,32 +3203,35 @@ struct AAKernelInfoFunction : AAKernelInfo {
           .CreateCondBr(IsSPMDGuardedCheck, RegionNotguardedBB, RegionCheckTidBB)
           ->setDebugLoc(DL);
 
-      // Add check for GTid in RegionCheckTidBB
+      // Add check for Tid in RegionCheckTidBB
       RegionCheckTidBB->getTerminator()->eraseFromParent();
       OpenMPIRBuilder::LocationDescription LocRegionCheckTid(
           InsertPointTy(RegionCheckTidBB, RegionCheckTidBB->end()), DL);
       OMPInfoCache.OMPBuilder.updateToLocation(LocRegionCheckTid);
-      Value *GTidCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(GTid);
+      Value *TidCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(Tid);
       OMPInfoCache.OMPBuilder.Builder
-          .CreateCondBr(GTidCheck, RegionStartBB, RegionBarrierBB)
+          .CreateCondBr(TidCheck, RegionStartBB, RegionBarrierBB)
           ->setDebugLoc(DL);
 
-      // First barrier to ensure main threads has updated broadcast values.
+      // First barrier for synchronization, ensures main thread has updated
+      // values.
       FunctionCallee BarrierFn =
           OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
               M, OMPRTL___kmpc_barrier_simple_spmd);
       OMPInfoCache.OMPBuilder.updateToLocation(
         InsertPointTy(RegionBarrierBB, RegionBarrierBB->getFirstInsertionPt()));
-      OMPInfoCache.OMPBuilder.Builder.CreateCall(BarrierFn, {Ident, GTid})
+      OMPInfoCache.OMPBuilder.Builder.CreateCall(BarrierFn, {Ident, Tid})
           ->setDebugLoc(DL);
 
-      // Second barrier to ensure workers have read broadcast values.
-      CallInst::Create(BarrierFn, {Ident, GTid}, "", RegionBarrierBB->getTerminator())
-        ->setDebugLoc(DL);
+      // Second barrier ensures workers have read broadcast values.
+      if (HasBroadcastValues)
+        CallInst::Create(BarrierFn, {Ident, Tid}, "",
+                         RegionBarrierBB->getTerminator())
+            ->setDebugLoc(DL);
 
-      errs() << "=== Dump function\n";
-      Fn->dump();
-      errs() << "=== End of Dump function\n";
+      //dbgs() << "=== Dump function\n";
+      //Fn->dump();
+      //dbgs() << "=== End of Dump function\n";
     };
 
     //SmallPtrSet<BasicBlock *, 4> GuardedBasicBlocks;
@@ -3193,17 +3239,17 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
     for (Instruction *GuardedI : SPMDCompatibilityTracker) {
       BasicBlock *BB = GuardedI->getParent();
-      errs() << "=== F " << getAnchorScope()->getName() << " GuardedI "
-             << *GuardedI << " in  BB " << *BB << " in F "
+      dbgs() << "=== F " << getAnchorScope()->getName() << " GuardedI "
+             << *GuardedI << " in  BB " << BB->getName() << " in F "
              << GuardedI->getFunction()->getName() << "\n";
-      errs() << "=== End of GuardedI\n";
+      dbgs() << "=== End of GuardedI\n";
       auto *CalleeAA = A.lookupAAFor<AAKernelInfo>(IRPosition::function(*GuardedI->getFunction()),
                                                     nullptr, DepClassTy::NONE);
       assert(CalleeAA != nullptr && "Expected Callee AAKernelInfo");
       auto &CalleeAAFunction = *cast<AAKernelInfoFunction>(CalleeAA);
-      // Continue if instructions in this BB have been already guarded.
-      if (CalleeAAFunction.getGuardedInstructions().count(GuardedI)) {
-        errs() << "=== Skip already guarded I " << *GuardedI << "\n";
+      // Continue if instruction is already guarded.
+      if (CalleeAAFunction.getGuardedInstructions().contains(GuardedI)) {
+        dbgs() << "=== Skip already guarded I " << *GuardedI << "\n";
         continue;
       }
 
@@ -3233,19 +3279,15 @@ struct AAKernelInfoFunction : AAKernelInfo {
     }
 
     for (auto &GR : GuardedRegions) {
-      //errs() << "=== Start of Guarded Region\n";
-      //errs() << "=== Guarded Region Start\n";
-      //GR.first->dump();
-      //errs() << "=== Guarded Region End\n";
-      //GR.second->dump();
-      #if 1
+      //dbgs() << "=== Start of Guarded Region From " << *GR.first << " To "
+      //       << *GR.second << "\n";
+#if 1
       CreateGuardedRegion(GR.first, GR.second);
       #else
       return false;
       #endif
-      //errs() << "=== End of Guarded Region\n";
+      //dbgs() << "=== End of Guarded Region\n";
     }
-    #endif
 
     // Adjust the global exec mode flag that tells the runtime what mode this
     // kernel is executed in.
@@ -3261,13 +3303,16 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
     // Next rewrite the init and deinit calls to indicate we use SPMD-mode now.
     const int InitIsSPMDArgNo = 1;
+    const int InitIsSPMDGuardedArgNo = 2;
+    const int InitUseStateMachineArgNo = 3;
+    const int InitRequiresFullRuntimeArgNo = 4;
     const int DeinitIsSPMDArgNo = 1;
-    const int InitUseStateMachineArgNo = 2;
-    const int InitRequiresFullRuntimeArgNo = 3;
     const int DeinitRequiresFullRuntimeArgNo = 2;
 
     auto &Ctx = getAnchorValue().getContext();
     A.changeUseAfterManifest(KernelInitCB->getArgOperandUse(InitIsSPMDArgNo),
+                             *ConstantInt::getBool(Ctx, 1));
+    A.changeUseAfterManifest(KernelInitCB->getArgOperandUse(InitIsSPMDGuardedArgNo),
                              *ConstantInt::getBool(Ctx, 1));
     A.changeUseAfterManifest(
         KernelInitCB->getArgOperandUse(InitUseStateMachineArgNo),
@@ -3289,9 +3334,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     };
     A.emitRemark<OptimizationRemark>(KernelInitCB, "OpenMPKernelSPMDMode",
                                      Remark);
-    dbgs() << "=== Dump module after SPMDization\n";
-    Kernel->getParent()->dump();
-    dbgs() << "=== End of Dump module after SPMDization\n";
+    //dbgs() << "=== Dump module after SPMDization\n";
+    //Kernel->getParent()->dump();
+    //dbgs() << "=== End of Dump module after SPMDization\n";
     return true;
   };
 
@@ -3300,7 +3345,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
            "Custom state machine with invalid parallel region states?");
 
     const int InitIsSPMDArgNo = 1;
-    const int InitUseStateMachineArgNo = 2;
+    const int InitUseStateMachineArgNo = 3;
 
     // Check if the current configuration is non-SPMD and generic state machine.
     // If we already have SPMD mode or a custom state machine we do not need to
@@ -3573,12 +3618,15 @@ struct AAKernelInfoFunction : AAKernelInfo {
   ChangeStatus updateImpl(Attributor &A) override {
     KernelInfoState StateBefore = getState();
 
+    Function *Fn = getAnchorScope();
+    dbgs() << "updateImpl for F " << Fn->getName() << "\n";
+
     // Callback to check a read/write instruction.
     auto CheckRWInst = [&](Instruction &I) {
       // We handle calls later.
       if (isa<CallBase>(I)) {
-        dbgs() << "CheckRWInst F " << getAnchorScope()->getName()
-               << "found CB " << I << "\n ";
+        //dbgs() << "CheckRWInst F " << getAnchorScope()->getName()
+        //       << "found CB " << I << "\n ";
             return true;
       }
       // We only care about write effects.
@@ -3588,22 +3636,42 @@ struct AAKernelInfoFunction : AAKernelInfo {
         SmallVector<const Value *> Objects;
         getUnderlyingObjects(SI->getPointerOperand(), Objects);
         if (llvm::all_of(Objects,
-                         [](const Value *Obj) { return isa<AllocaInst>(Obj); }))
+                         [](const Value *Obj) {
+                           //dbgs() << "Obj " << *Obj << "\n";
+                           return isa<AllocaInst>(Obj); }))
           return true;
+        // Check for AAHeapToStack moved objects to avoid guarding.
+        auto *HS = A.lookupAAFor<AAHeapToStack>(IRPosition::function(*I.getFunction()), this,
+                                            DepClassTy::OPTIONAL);
+        if (HS)
+          if (llvm::all_of(Objects, [HS](const Value *Obj) {
+                auto *CB = dyn_cast<CallBase>(Obj);
+                if (!CB)
+                  return false;
+                bool ToBeOnStack = HS->isAssumedHeapToStack(*CB);
+                dbgs() << "Obj " << *Obj << " ToBeOnStack " << ToBeOnStack
+                       << "\n";
+                return ToBeOnStack;
+              })) {
+            return true;
+          }
       }
-      // For now we give up on everything but stores.
+
+      // Insert instruction that needs guarding.
       SPMDCompatibilityTracker.insert(&I);
       return true;
     };
 
     bool UsedAssumedInformationInCheckRWInst = false;
-    if (!A.checkForAllReadWriteInstructions(
-            CheckRWInst, *this, UsedAssumedInformationInCheckRWInst))
-      SPMDCompatibilityTracker.indicatePessimisticFixpoint();
+    if (!SPMDCompatibilityTracker.isAtFixpoint())
+      if (!A.checkForAllReadWriteInstructions(
+              CheckRWInst, *this, UsedAssumedInformationInCheckRWInst))
+        SPMDCompatibilityTracker.indicatePessimisticFixpoint();
 
     if (!IsKernelEntry)
       updateReachingKernelEntries(A);
 
+    bool AllSPMDStatesWereFixed = true;
     // Callback to check a call instruction.
     auto CheckCallInst = [&](Instruction &I) {
       auto &CB = cast<CallBase>(I);
@@ -3611,6 +3679,8 @@ struct AAKernelInfoFunction : AAKernelInfo {
           *this, IRPosition::callsite_function(CB), DepClassTy::OPTIONAL);
       if (CBAA.getState().isValidState())
         getState() ^= CBAA.getState();
+      AllSPMDStatesWereFixed &= CBAA.SPMDCompatibilityTracker.isAtFixpoint();
+
       return true;
     };
 
@@ -3618,6 +3688,12 @@ struct AAKernelInfoFunction : AAKernelInfo {
     if (!A.checkForAllCallLikeInstructions(
             CheckCallInst, *this, UsedAssumedInformationInCheckCallInst))
       return indicatePessimisticFixpoint();
+
+    // If we haven't used any assumed information for the SPMD state we can fix
+    // it.
+    if (!UsedAssumedInformationInCheckRWInst &&
+        !UsedAssumedInformationInCheckCallInst && AllSPMDStatesWereFixed)
+      SPMDCompatibilityTracker.indicateOptimisticFixpoint();
 
     return StateBefore == getState() ? ChangeStatus::UNCHANGED
                                      : ChangeStatus::CHANGED;
@@ -3667,8 +3743,8 @@ struct AAKernelInfoCallSite : AAKernelInfo {
     CallBase &CB = cast<CallBase>(getAssociatedValue());
     Function *Callee = getAssociatedFunction();
 
-    dbgs() << "AAKernelInfoCallSite CB " << CB << " in "
-           << CB.getParent()->getParent()->getName() << "\n";
+    //dbgs() << "AAKernelInfoCallSite CB " << CB << " in "
+    //       << CB.getParent()->getParent()->getName() << "\n";
 
     // Helper to lookup an assumption string.
     auto HasAssumption = [](Function *Fn, StringRef AssumptionStr) {
@@ -3771,8 +3847,8 @@ struct AAKernelInfoCallSite : AAKernelInfo {
     case OMPRTL___kmpc_omp_task:
       // We do not look into tasks right now, just give up.
       SPMDCompatibilityTracker.insert(&CB);
-      SPMDCompatibilityTracker.indicatePessimisticFixpoint();
       ReachedUnknownParallelRegions.insert(&CB);
+      indicatePessimisticFixpoint();
       //break;
       return;
     case OMPRTL___kmpc_alloc_shared:
@@ -3783,7 +3859,8 @@ struct AAKernelInfoCallSite : AAKernelInfo {
       // Unknown OpenMP runtime calls cannot be executed in SPMD-mode,
       // generally.
       SPMDCompatibilityTracker.insert(&CB);
-      break;
+      indicatePessimisticFixpoint();
+      return;
     }
     // All other OpenMP runtime calls will not reach parallel regions so they
     // can be safely ignored for now. Since it is a known OpenMP runtime call we
@@ -4045,6 +4122,7 @@ void OpenMPOpt::registerAAs(bool IsModulePass) {
           DepClassTy::NONE, /* ForceUpdate */ false,
           /* UpdateAfterInit */ false);
 
+#if 0
     auto &IsSPMDRFI = OMPInfoCache.RFIs[OMPRTL___kmpc_is_spmd_exec_mode];
     IsSPMDRFI.foreachUse(SCC, [&](Use &U, Function &) {
       CallInst *CI = OpenMPOpt::getCallIfRegularCall(U, &IsSPMDRFI);
@@ -4056,6 +4134,7 @@ void OpenMPOpt::registerAAs(bool IsModulePass) {
           /* UpdateAfterInit */ false);
       return false;
     });
+    #endif
   }
 
   // Create CallSite AA for all Getters.
@@ -4181,11 +4260,11 @@ AAKernelInfo &AAKernelInfo::createForPosition(const IRPosition &IRP,
   case IRPosition::IRP_CALL_SITE_ARGUMENT:
     llvm_unreachable("KernelInfo can only be created for function position!");
   case IRPosition::IRP_CALL_SITE:
-    dbgs() << "New AAKernelInfo for CS V " << IRP.getAnchorValue() << "\n";
+    //dbgs() << "New AAKernelInfo for CS V " << IRP.getAnchorValue() << "\n";
     AA = new (A.Allocator) AAKernelInfoCallSite(IRP, A);
     break;
   case IRPosition::IRP_FUNCTION:
-    dbgs() << "New AAKernelInfo for Function V " << IRP.getAnchorValue() << "\n";
+    //dbgs() << "New AAKernelInfo for Function V " << IRP.getAnchorValue() << "\n";
     AA = new (A.Allocator) AAKernelInfoFunction(IRP, A);
     break;
   }
@@ -4246,9 +4325,9 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
   DenseSet<const Function *> InternalizedFuncs;
   if (isOpenMPDevice(M))
     for (Function &F : M) {
-      dbgs() << "Check F " << F.getName() << " for internalization\n";
+      //dbgs() << "Check F " << F.getName() << " for internalization\n";
       if (!F.isDeclaration() && !Kernels.contains(&F) && IsCalled(F)) {
-        dbgs() << "Internalize function " << F.getName() << "\n";
+        //dbgs() << "Internalize function " << F.getName() << "\n";
         if (Attributor::internalizeFunction(F, /* Force */ true)) {
           InternalizedFuncs.insert(&F);
         } else if (!F.hasLocalLinkage() && !F.hasFnAttribute(Attribute::Cold)) {
