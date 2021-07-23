@@ -417,8 +417,9 @@ EXTERN int32_t __kmpc_cancel(kmp_Ident *loc, int32_t global_tid,
 
 // non standard
 EXTERN int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD,
-                                 bool UseGenericStateMachine,
-                           bool RequiresFullRuntime);
+                                  bool IsSPMDGuarded,
+                                  bool UseGenericStateMachine,
+                                  bool RequiresFullRuntime);
 EXTERN void __kmpc_target_deinit(ident_t *Ident, bool IsSPMD,
                            bool RequiresFullRuntime);
 EXTERN void __kmpc_kernel_prepare_parallel(void *WorkFn);
@@ -448,6 +449,8 @@ EXTERN void __kmpc_parallel_51(ident_t *ident, kmp_int32 global_tid,
 
 // SPMD execution mode interrogation function.
 EXTERN int8_t __kmpc_is_spmd_exec_mode();
+
+EXTERN int8_t __kmpc_is_spmd_guarded_exec_mode();
 
 /// Return true if the hardware thread id \p Tid represents the OpenMP main
 /// thread in generic mode outside of a parallel region.
