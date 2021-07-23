@@ -4045,6 +4045,7 @@ void OpenMPOpt::registerAAs(bool IsModulePass) {
           DepClassTy::NONE, /* ForceUpdate */ false,
           /* UpdateAfterInit */ false);
 
+#if 0
     auto &IsSPMDRFI = OMPInfoCache.RFIs[OMPRTL___kmpc_is_spmd_exec_mode];
     IsSPMDRFI.foreachUse(SCC, [&](Use &U, Function &) {
       CallInst *CI = OpenMPOpt::getCallIfRegularCall(U, &IsSPMDRFI);
@@ -4056,6 +4057,7 @@ void OpenMPOpt::registerAAs(bool IsModulePass) {
           /* UpdateAfterInit */ false);
       return false;
     });
+#endif
   }
 
   // Create CallSite AA for all Getters.
