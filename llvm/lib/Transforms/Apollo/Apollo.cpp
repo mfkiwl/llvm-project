@@ -35,9 +35,11 @@ using namespace omp;
 STATISTIC(ApolloOpenMPRegionsInstrumented,
           "Number of OpenMP parallel regions instrumented for Apollo");
 
-cl::list<unsigned> NumThreadsList("apollo-omp-numthreads", cl::CommaSeparated,
+static cl::list<unsigned> NumThreadsList("apollo-omp-numthreads", cl::CommaSeparated,
                              cl::desc("Num threads for OpenMP tuning"),
                              cl::value_desc("1, 2, 3, ..."), cl::OneOrMore);
+static cl::opt<bool> ApolloEnableOMPClause("apollo-enable-omp-clause",cl::init(false),
+                                    cl::Hidden);
 
 #define EnumAttr(Kind) Attribute::get(Ctx, Attribute::AttrKind::Kind)
 #define AttributeSet(...)                                                      \
@@ -146,14 +148,17 @@ struct Apollo : public ModulePass {
 
             ForkCI = dyn_cast<CallBase>(ACS.getInstruction());
             errs() << "ForkCI " << *ForkCI << "\n";
-            MDNode *MD = ForkCI->getMetadata("metadata.apollo");
-            if (!MD)
-              return;
+            if (ApolloEnableOMPClause) {
+              // Check if Apollo is enabled for the parallel region.
+              MDNode *MD = ForkCI->getMetadata("metadata.apollo");
+              if (!MD)
+                return;
+              errs() << "=== MD\n";
+              if (MD)
+                MD->dump();
+              errs() << "=== End of MD\n";
+            }
 
-            errs() << "=== MD\n";
-            if (MD)
-              MD->dump();
-            errs() << "=== End of MD\n";
             assert(ForkCI->getCalledFunction() ==
                        OMPIRB.getOrCreateRuntimeFunctionPtr(
                            OMPRTL___kmpc_fork_call) &&
