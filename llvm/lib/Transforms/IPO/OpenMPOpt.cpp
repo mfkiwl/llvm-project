@@ -39,6 +39,7 @@
 #include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/CallGraphUpdater.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/CodeExtractor.h"
 
 using namespace llvm;
@@ -503,7 +504,7 @@ struct KernelInfoState : AbstractState {
   /// State to track if we are in SPMD-mode, assumed or know, and why we decided
   /// we cannot be. If it is assumed, then RequiresFullRuntime should also be
   /// false.
-  BooleanStateWithPtrSetVector<Instruction> SPMDCompatibilityTracker;
+  BooleanStateWithPtrSetVector<Instruction, false> SPMDCompatibilityTracker;
 
   /// The __kmpc_target_init call in this kernel, if any. If we find more than
   /// one we abort as the kernel is malformed.
@@ -2756,6 +2757,12 @@ struct AAKernelInfoFunction : AAKernelInfo {
   AAKernelInfoFunction(const IRPosition &IRP, Attributor &A)
       : AAKernelInfo(IRP, A) {}
 
+  SmallPtrSet<Instruction *, 4> GuardedInstructions;
+
+  SmallPtrSetImpl<Instruction *> &getGuardedInstructions() {
+    return GuardedInstructions;
+  }
+
   /// See AbstractAttribute::initialize(...).
   void initialize(Attributor &A) override {
     // This is a high-level transform that might change the constant arguments
@@ -2849,6 +2856,29 @@ struct AAKernelInfoFunction : AAKernelInfo {
       return Val;
     };
 
+    Attributor::SimplifictionCallbackTy IsSPMDGuardedModeSimplifyCB =
+        [&](const IRPosition &IRP, const AbstractAttribute *AA,
+            bool &UsedAssumedInformation) -> Optional<Value *> {
+      // IRP represents the "SPMDCompatibilityTracker" argument of an
+      // __kmpc_target_init or
+      // __kmpc_target_deinit call. We will answer this one with the internal
+      // state.
+      if (!SPMDCompatibilityTracker.isValidState())
+        return nullptr;
+      if (!SPMDCompatibilityTracker.isAtFixpoint()) {
+        if (AA)
+          A.recordDependence(*this, *AA, DepClassTy::OPTIONAL);
+        UsedAssumedInformation = true;
+      } else {
+        UsedAssumedInformation = false;
+      }
+
+      auto *Val = ConstantInt::getBool(IRP.getAnchorValue().getContext(),
+                                       (SPMDCompatibilityTracker.isAssumed() &&
+                                        !SPMDCompatibilityTracker.empty()));
+      return Val;
+    };
+
     Attributor::SimplifictionCallbackTy IsGenericModeSimplifyCB =
         [&](const IRPosition &IRP, const AbstractAttribute *AA,
             bool &UsedAssumedInformation) -> Optional<Value *> {
@@ -2871,9 +2901,10 @@ struct AAKernelInfoFunction : AAKernelInfo {
     };
 
     constexpr const int InitIsSPMDArgNo = 1;
+    constexpr const int InitIsSPMDGuardedArgNo = 2;
+    constexpr const int InitUseStateMachineArgNo = 3;
+    constexpr const int InitRequiresFullRuntimeArgNo = 4;
     constexpr const int DeinitIsSPMDArgNo = 1;
-    constexpr const int InitUseStateMachineArgNo = 2;
-    constexpr const int InitRequiresFullRuntimeArgNo = 3;
     constexpr const int DeinitRequiresFullRuntimeArgNo = 2;
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelInitCB, InitUseStateMachineArgNo),
@@ -2881,6 +2912,9 @@ struct AAKernelInfoFunction : AAKernelInfo {
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelInitCB, InitIsSPMDArgNo),
         IsSPMDModeSimplifyCB);
+    A.registerSimplificationCallback(
+        IRPosition::callsite_argument(*KernelInitCB, InitIsSPMDGuardedArgNo),
+        IsSPMDGuardedModeSimplifyCB);
     A.registerSimplificationCallback(
         IRPosition::callsite_argument(*KernelDeinitCB, DeinitIsSPMDArgNo),
         IsSPMDModeSimplifyCB);
@@ -2952,6 +2986,217 @@ struct AAKernelInfoFunction : AAKernelInfo {
       return false;
     }
 
+    auto CreateGuardedRegion = [&](Instruction *RegionStartI,
+                                   Instruction *RegionEndI) {
+      LoopInfo *LI = nullptr;
+      DominatorTree *DT = nullptr;
+      MemorySSAUpdater *MSU = nullptr;
+      using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+
+      BasicBlock *ParentBB = RegionStartI->getParent();
+      Function *Fn = ParentBB->getParent();
+      Module &M = *Fn->getParent();
+
+      // Create all the blocks and logic.
+      // ParentBB:
+      //    IsSPMDGuarded = __kmpc_is_spmd_guarded_mode()
+      //    if (IsSPMDGuarded)
+      //        goto RegionCheckTidBB
+      // RegionNotguardedBB:
+      //    <execute instructions not guarded>
+      //    goto RegionExitBB
+      // RegionCheckTidBB:
+      //    Tid = __kmpc_hardware_thread_id()
+      //    if (Tid != 0)
+      //        goto RegionBarrierBB
+      // RegionStartBB:
+      //    <execute instructions guarded>
+      //    goto RegionEndBB
+      // RegionEndBB:
+      //    <store escaping values to shared mem>
+      //    goto RegionBarrierBB
+      //  RegionBarrierBB:
+      //    __kmpc_simple_barrier_spmd()
+      //    // second barrier is omitted if lacking escaping values.
+      //    <load escaping values from shared mem>
+      //    __kmpc_simple_barrier_spmd()
+      //    goto RegionExitBB
+      // RegionExitBB:
+      //    <execute rest of instructions>
+
+      BasicBlock *RegionEndBB = SplitBlock(ParentBB, RegionEndI->getNextNode(),
+                                           DT, LI, MSU, "region.guarded.end");
+      BasicBlock *RegionBarrierBB =
+          SplitBlock(RegionEndBB, &*RegionEndBB->getFirstInsertionPt(), DT, LI,
+                     MSU, "region.barrier");
+      BasicBlock *RegionExitBB =
+          SplitBlock(RegionBarrierBB, &*RegionBarrierBB->getFirstInsertionPt(),
+                     DT, LI, MSU, "region.exit");
+      BasicBlock *RegionStartBB =
+          SplitBlock(ParentBB, RegionStartI, DT, LI, MSU, "region.guarded");
+
+      // Create a clone that contains an non-guarded version for parallel
+      // execution.
+      ValueToValueMapTy VMap;
+      BasicBlock *RegionNotguardedBB =
+          CloneBasicBlock(RegionStartBB, VMap, ".not");
+      RegionNotguardedBB->insertInto(Fn, RegionStartBB);
+      RegionNotguardedBB->getTerminator()->setSuccessor(0, RegionExitBB);
+
+      assert(ParentBB->getUniqueSuccessor() == RegionStartBB &&
+             "Expected a different CFG");
+
+      BasicBlock *RegionCheckTidBB = SplitBlock(
+          ParentBB, ParentBB->getTerminator(), DT, LI, MSU, "region.check.tid");
+
+      // Register basic blocks with the Attributor.
+      A.registerManifestAddedBasicBlock(*RegionEndBB);
+      A.registerManifestAddedBasicBlock(*RegionBarrierBB);
+      A.registerManifestAddedBasicBlock(*RegionExitBB);
+      A.registerManifestAddedBasicBlock(*RegionStartBB);
+      A.registerManifestAddedBasicBlock(*RegionCheckTidBB);
+      A.registerManifestAddedBasicBlock(*RegionNotguardedBB);
+
+      bool HasBroadcastValues = false;
+      // Find escaping outputs from the guarded region to outside users and
+      // broadcast their values to them.
+      for (Instruction &I : *RegionStartBB) {
+        SmallPtrSet<Instruction *, 4> OutsideUsers;
+        for (User *Usr : I.users()) {
+          Instruction &UsrI = *cast<Instruction>(Usr);
+          if (UsrI.getParent() != RegionStartBB)
+            OutsideUsers.insert(&UsrI);
+        }
+
+        if (OutsideUsers.empty())
+          continue;
+
+        HasBroadcastValues = true;
+
+        // Emit a global variable in shared memory to store the broadcasted
+        // value.
+        auto *SharedMem = new GlobalVariable(
+            M, I.getType(), /* IsConstant */ false,
+            GlobalValue::InternalLinkage, UndefValue::get(I.getType()),
+            I.getName() + ".guarded.output.alloc", nullptr,
+            GlobalValue::NotThreadLocal,
+            static_cast<unsigned>(AddressSpace::Shared));
+
+        // Emit a store instruction to update the value.
+        new StoreInst(&I, SharedMem, RegionEndBB->getTerminator());
+
+        LoadInst *LoadI = new LoadInst(I.getType(), SharedMem,
+                                       I.getName() + ".guarded.output.load",
+                                       RegionBarrierBB->getTerminator());
+
+        PHINode *PN = PHINode::Create(I.getType(), 2, ".phi.guarded",
+                                      &*RegionExitBB->getFirstInsertionPt());
+        PN->addIncoming(VMap[&I], RegionNotguardedBB);
+        PN->addIncoming(LoadI, RegionBarrierBB);
+        // Emit a load instruction and replace uses of the output value.
+        for (Instruction *UsrI : OutsideUsers) {
+          assert(UsrI->getParent() == RegionExitBB &&
+                 "Expected escaping users in exit region");
+          UsrI->replaceUsesOfWith(&I, PN);
+        }
+      }
+
+      auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+
+      // Add check for parallel level in ParentBB.
+      const DebugLoc DL = ParentBB->getTerminator()->getDebugLoc();
+      ParentBB->getTerminator()->eraseFromParent();
+      OpenMPIRBuilder::LocationDescription Loc(
+          InsertPointTy(ParentBB, ParentBB->end()), DL);
+      OMPInfoCache.OMPBuilder.updateToLocation(Loc);
+      auto *SrcLocStr = OMPInfoCache.OMPBuilder.getOrCreateSrcLocStr(Loc);
+      Value *Ident = OMPInfoCache.OMPBuilder.getOrCreateIdent(SrcLocStr);
+      FunctionCallee HardwareTidFn =
+          OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_get_hardware_thread_id_in_block);
+      FunctionCallee IsSPMDGuardedFn =
+          OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_is_spmd_guarded_exec_mode);
+      Value *Tid =
+          OMPInfoCache.OMPBuilder.Builder.CreateCall(HardwareTidFn, {});
+      Value *IsSPMDGuarded =
+          OMPInfoCache.OMPBuilder.Builder.CreateCall(IsSPMDGuardedFn, {});
+      Value *IsSPMDGuardedCheck =
+          OMPInfoCache.OMPBuilder.Builder.CreateIsNull(IsSPMDGuarded);
+      OMPInfoCache.OMPBuilder.Builder
+          .CreateCondBr(IsSPMDGuardedCheck, RegionNotguardedBB,
+                        RegionCheckTidBB)
+          ->setDebugLoc(DL);
+
+      // Add check for Tid in RegionCheckTidBB
+      RegionCheckTidBB->getTerminator()->eraseFromParent();
+      OpenMPIRBuilder::LocationDescription LocRegionCheckTid(
+          InsertPointTy(RegionCheckTidBB, RegionCheckTidBB->end()), DL);
+      OMPInfoCache.OMPBuilder.updateToLocation(LocRegionCheckTid);
+      Value *TidCheck = OMPInfoCache.OMPBuilder.Builder.CreateIsNull(Tid);
+      OMPInfoCache.OMPBuilder.Builder
+          .CreateCondBr(TidCheck, RegionStartBB, RegionBarrierBB)
+          ->setDebugLoc(DL);
+
+      // First barrier for synchronization, ensures main thread has updated
+      // values.
+      FunctionCallee BarrierFn =
+          OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_barrier_simple_spmd);
+      OMPInfoCache.OMPBuilder.updateToLocation(InsertPointTy(
+          RegionBarrierBB, RegionBarrierBB->getFirstInsertionPt()));
+      OMPInfoCache.OMPBuilder.Builder.CreateCall(BarrierFn, {Ident, Tid})
+          ->setDebugLoc(DL);
+
+      // Second barrier ensures workers have read broadcast values.
+      if (HasBroadcastValues)
+        CallInst::Create(BarrierFn, {Ident, Tid}, "",
+                         RegionBarrierBB->getTerminator())
+            ->setDebugLoc(DL);
+    };
+
+    // SmallPtrSet<BasicBlock *, 4> GuardedBasicBlocks;
+    SmallVector<std::pair<Instruction *, Instruction *>, 4> GuardedRegions;
+
+    for (Instruction *GuardedI : SPMDCompatibilityTracker) {
+      BasicBlock *BB = GuardedI->getParent();
+      auto *CalleeAA = A.lookupAAFor<AAKernelInfo>(
+          IRPosition::function(*GuardedI->getFunction()), nullptr,
+          DepClassTy::NONE);
+      assert(CalleeAA != nullptr && "Expected Callee AAKernelInfo");
+      auto &CalleeAAFunction = *cast<AAKernelInfoFunction>(CalleeAA);
+      // Continue if instruction is already guarded.
+      if (CalleeAAFunction.getGuardedInstructions().contains(GuardedI))
+        continue;
+
+      Instruction *GuardedRegionStart = nullptr, *GuardedRegionEnd = nullptr;
+      for (Instruction &I : *BB) {
+        // If instruction I needs to be guarded update the guarded region
+        // bounds.
+        if (SPMDCompatibilityTracker.contains(&I)) {
+          CalleeAAFunction.getGuardedInstructions().insert(&I);
+          if (GuardedRegionStart)
+            GuardedRegionEnd = &I;
+          else
+            GuardedRegionStart = GuardedRegionEnd = &I;
+
+          continue;
+        }
+
+        // Instruction I does not need guarding, store
+        // any region found and reset bounds.
+        if (GuardedRegionStart) {
+          GuardedRegions.push_back(
+              std::make_pair(GuardedRegionStart, GuardedRegionEnd));
+          GuardedRegionStart = nullptr;
+          GuardedRegionEnd = nullptr;
+        }
+      }
+    }
+
+    for (auto &GR : GuardedRegions)
+      CreateGuardedRegion(GR.first, GR.second);
+
     // Adjust the global exec mode flag that tells the runtime what mode this
     // kernel is executed in.
     Function *Kernel = getAnchorScope();
@@ -2970,14 +3215,18 @@ struct AAKernelInfoFunction : AAKernelInfo {
 
     // Next rewrite the init and deinit calls to indicate we use SPMD-mode now.
     const int InitIsSPMDArgNo = 1;
+    const int InitIsSPMDGuardedArgNo = 2;
+    const int InitUseStateMachineArgNo = 3;
+    const int InitRequiresFullRuntimeArgNo = 4;
     const int DeinitIsSPMDArgNo = 1;
-    const int InitUseStateMachineArgNo = 2;
-    const int InitRequiresFullRuntimeArgNo = 3;
     const int DeinitRequiresFullRuntimeArgNo = 2;
 
     auto &Ctx = getAnchorValue().getContext();
     A.changeUseAfterManifest(KernelInitCB->getArgOperandUse(InitIsSPMDArgNo),
                              *ConstantInt::getBool(Ctx, 1));
+    A.changeUseAfterManifest(
+        KernelInitCB->getArgOperandUse(InitIsSPMDGuardedArgNo),
+        *ConstantInt::getBool(Ctx, 1));
     A.changeUseAfterManifest(
         KernelInitCB->getArgOperandUse(InitUseStateMachineArgNo),
         *ConstantInt::getBool(Ctx, 0));
@@ -3005,7 +3254,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
            "Custom state machine with invalid parallel region states?");
 
     const int InitIsSPMDArgNo = 1;
-    const int InitUseStateMachineArgNo = 2;
+    const int InitUseStateMachineArgNo = 3;
 
     // Check if the current configuration is non-SPMD and generic state machine.
     // If we already have SPMD mode or a custom state machine we do not need to
@@ -3283,8 +3532,21 @@ struct AAKernelInfoFunction : AAKernelInfo {
         if (llvm::all_of(Objects,
                          [](const Value *Obj) { return isa<AllocaInst>(Obj); }))
           return true;
+        // Check for AAHeapToStack moved objects which must not be guarded.
+        auto &HS = A.getAAFor<AAHeapToStack>(
+            *this, IRPosition::function(*I.getFunction()),
+            DepClassTy::REQUIRED);
+        if (llvm::all_of(Objects, [&HS](const Value *Obj) {
+              auto *CB = dyn_cast<CallBase>(Obj);
+              if (!CB)
+                return false;
+              return HS.isAssumedHeapToStack(*CB);
+            })) {
+          return true;
+        }
       }
-      // For now we give up on everything but stores.
+
+      // Insert instruction that needs guarding.
       SPMDCompatibilityTracker.insert(&I);
       return true;
     };
@@ -3470,7 +3732,8 @@ struct AAKernelInfoCallSite : AAKernelInfo {
       // We do not look into tasks right now, just give up.
       SPMDCompatibilityTracker.insert(&CB);
       ReachedUnknownParallelRegions.insert(&CB);
-      break;
+      indicatePessimisticFixpoint();
+      return;
     case OMPRTL___kmpc_alloc_shared:
     case OMPRTL___kmpc_free_shared:
       // Return without setting a fixpoint, to be resolved in updateImpl.
@@ -3479,7 +3742,8 @@ struct AAKernelInfoCallSite : AAKernelInfo {
       // Unknown OpenMP runtime calls cannot be executed in SPMD-mode,
       // generally.
       SPMDCompatibilityTracker.insert(&CB);
-      break;
+      indicatePessimisticFixpoint();
+      return;
     }
     // All other OpenMP runtime calls will not reach parallel regions so they
     // can be safely ignored for now. Since it is a known OpenMP runtime call we

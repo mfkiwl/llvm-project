@@ -82,11 +82,12 @@ static void __kmpc_generic_kernel_deinit() {
   omptarget_nvptx_workFn = 0;
 }
 
-static void __kmpc_spmd_kernel_init(bool RequiresFullRuntime) {
+static void __kmpc_spmd_kernel_init(bool IsSPMDGuarded, bool RequiresFullRuntime) {
   PRINT0(LD_IO, "call to __kmpc_spmd_kernel_init\n");
 
-  setExecutionParameters(Spmd, RequiresFullRuntime ? RuntimeInitialized
-                         : RuntimeUninitialized);
+  setExecutionParameters(IsSPMDGuarded ? SpmdGuarded : Spmd,
+                         RequiresFullRuntime ? RuntimeInitialized
+                                             : RuntimeUninitialized);
   int threadId = __kmpc_get_hardware_thread_id_in_block();
   if (threadId == 0) {
     usedSlotIdx = __kmpc_impl_smid() % MAX_SM;
@@ -160,7 +161,12 @@ static void __kmpc_spmd_kernel_deinit(bool RequiresFullRuntime) {
 
 // Return true if the current target region is executed in SPMD mode.
 EXTERN int8_t __kmpc_is_spmd_exec_mode() {
-  return (execution_param & ModeMask) == Spmd;
+  return ((execution_param & ModeMask) == Spmd ||
+          (execution_param & ModeMask) == SpmdGuarded);
+}
+
+EXTERN __attribute__((used,retain,weak)) int8_t __kmpc_is_spmd_guarded_exec_mode() {
+   return ((execution_param & ModeMask) == SpmdGuarded);
 }
 
 EXTERN int8_t __kmpc_is_generic_main_thread(kmp_int32 Tid) {
@@ -202,12 +208,12 @@ static void __kmpc_target_region_state_machine(ident_t *Ident) {
 }
 
 EXTERN
-int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD,
+int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD, bool IsSPMDGuarded,
                            bool UseGenericStateMachine,
                            bool RequiresFullRuntime) {
   int TId = __kmpc_get_hardware_thread_id_in_block();
   if (IsSPMD)
-    __kmpc_spmd_kernel_init(RequiresFullRuntime);
+    __kmpc_spmd_kernel_init(IsSPMDGuarded, RequiresFullRuntime);
   else
     __kmpc_generic_kernel_init();
 

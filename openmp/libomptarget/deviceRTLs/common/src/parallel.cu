@@ -300,7 +300,36 @@ EXTERN void __kmpc_parallel_51(kmp_Ident *ident, kmp_int32 global_tid,
   }
 
   if (__kmpc_is_spmd_exec_mode()) {
+    // Store spmd_guarded status to check after the parallel region executes.
+    int is_spmd_guarded = __kmpc_is_spmd_guarded_exec_mode();
+    if (is_spmd_guarded) {
+      // No barrier is need on entry since this will be called only from non-guarded
+      // SPMD execution.
+
+      // Disable SPMD guarding for the parallel region. Runtime suport is not needed
+      // by construction of SPMD guarded regions, so simple assignment to Spmd is
+      // enough. Also, a preceding barrier is unnecessary since all threads must be
+      // in non-guarded context when reaching this point.
+      if (__kmpc_get_hardware_thread_id_in_block() == 0)
+        execution_param = Spmd;
+
+      // Barrier to ensure all threads are updated to Spmd.
+      __kmpc_barrier_simple_spmd(ident, 0);
+    }
+
     __kmp_invoke_microtask(global_tid, 0, fn, args, nargs);
+
+    if (is_spmd_guarded) {
+      // Re-enable SPMD guarding. Runtime support is not needed by construction.
+      // Barrier to ensure all threads have finished Spmd execution before
+      // re-enabling guarding.
+      __kmpc_barrier_simple_spmd(ident, 0);
+      if (__kmpc_get_hardware_thread_id_in_block() == 0)
+        execution_param = SpmdGuarded;
+
+      // Barrier to ensure all threads are updated to SpmdGuarded.
+      __kmpc_barrier_simple_spmd(ident, 0);
+    }
     return;
   }
 

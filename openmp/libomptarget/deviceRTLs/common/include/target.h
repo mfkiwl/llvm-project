@@ -72,7 +72,7 @@ typedef struct ident ident_t;
 ///
 /// \param Ident               Source location identification, can be NULL.
 ///
-int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD,
+int32_t __kmpc_target_init(ident_t *Ident, bool IsSPMD, bool IsSPMDGuarded,
                            bool UseGenericStateMachine,
                            bool RequiresFullRuntime);
 
