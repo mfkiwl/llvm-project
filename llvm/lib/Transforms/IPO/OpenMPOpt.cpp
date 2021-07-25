@@ -519,6 +519,9 @@ struct KernelInfoState : AbstractState {
   /// State to track what kernel entries can reach the associated function.
   BooleanStateWithPtrSetVector<Function, false> ReachingKernelEntries;
 
+  /// State to track what parallel levels the associated function can be at.
+  BooleanStateWithSetVector<uint8_t, false> ParallelLevels;
+
   /// Abstract State interface
   ///{
 
@@ -2896,8 +2899,19 @@ struct AAKernelInfoFunction : AAKernelInfo {
     // Check if we know we are in SPMD-mode already.
     ConstantInt *IsSPMDArg =
         dyn_cast<ConstantInt>(KernelInitCB->getArgOperand(InitIsSPMDArgNo));
-    if (IsSPMDArg && !IsSPMDArg->isZero())
+    if (IsSPMDArg && !IsSPMDArg->isZero()) {
       SPMDCompatibilityTracker.indicateOptimisticFixpoint();
+      // Kernel entry is at level 1 if in SPMD mode.
+      // NOTE: This is quite dangerous because we assume there is no direct or
+      // indirect function call to `__kmpc_parallel_level` before we update the
+      // parallel level in `__kmpc_spmd_kernel_init`. However, we have to do it
+      // in this way to make the fold right. Alternatively, we could only fold
+      // to 0 if we don't use any assumed information.
+      ParallelLevels.insert(1);
+    } else {
+      // Kernel entry is at level 0 if in none-SPMD mode.
+      ParallelLevels.insert(0);
+    }
   }
 
   /// Modify the IR based on the KernelInfoState as the fixpoint iteration is
@@ -3295,8 +3309,10 @@ struct AAKernelInfoFunction : AAKernelInfo {
               CheckRWInst, *this, UsedAssumedInformationInCheckRWInst))
         SPMDCompatibilityTracker.indicatePessimisticFixpoint();
 
-    if (!IsKernelEntry)
+    if (!IsKernelEntry) {
       updateReachingKernelEntries(A);
+      updateParallelLevels(A);
+    }
 
     // Callback to check a call instruction.
     bool AllSPMDStatesWereFixed = true;
@@ -3351,6 +3367,49 @@ private:
                                 true /* RequireAllCallSites */,
                                 AllCallSitesKnown))
       ReachingKernelEntries.indicatePessimisticFixpoint();
+  }
+
+  /// Update info regarding parallel levels.
+  void updateParallelLevels(Attributor &A) {
+    auto &OMPInfoCache = static_cast<OMPInformationCache &>(A.getInfoCache());
+    OMPInformationCache::RuntimeFunctionInfo &Parallel51RFI =
+        OMPInfoCache.RFIs[OMPRTL___kmpc_parallel_51];
+
+    auto PredCallSite = [&](AbstractCallSite ACS) {
+      Function *Caller = ACS.getInstruction()->getFunction();
+
+      assert(Caller && "Caller is nullptr");
+
+      auto &CAA =
+          A.getOrCreateAAFor<AAKernelInfo>(IRPosition::function(*Caller));
+      if (CAA.ParallelLevels.isValidState()) {
+        // Any function that is called by `__kmpc_parallel_51` will not be
+        // folded as the parallel level in the function is updated. In order to
+        // get it right, all the analysis would depend on the implentation. That
+        // said, if in the future any change to the implementation, the analysis
+        // could be wrong. As a consequence, we are just conservative here.
+        if (Caller == Parallel51RFI.Declaration) {
+          ParallelLevels.indicatePessimisticFixpoint();
+          return true;
+        }
+
+        ParallelLevels ^= CAA.ParallelLevels;
+
+        return true;
+      }
+
+      // We lost track of the caller of the associated function, any kernel
+      // could reach now.
+      ParallelLevels.indicatePessimisticFixpoint();
+
+      return true;
+    };
+
+    bool AllCallSitesKnown = true;
+    if (!A.checkForAllCallSites(PredCallSite, *this,
+                                true /* RequireAllCallSites */,
+                                AllCallSitesKnown))
+      ParallelLevels.indicatePessimisticFixpoint();
   }
 };
 
@@ -3634,6 +3693,9 @@ struct AAFoldRuntimeCallCallSiteReturned : AAFoldRuntimeCall {
     case OMPRTL___kmpc_is_generic_main_thread_id:
       Changed |= foldIsGenericMainThread(A);
       break;
+    case OMPRTL___kmpc_parallel_level:
+      Changed |= foldParallelLevel(A);
+      break;
     default:
       llvm_unreachable("Unhandled OpenMP runtime function!");
     }
@@ -3748,6 +3810,58 @@ private:
                                                     : ChangeStatus::CHANGED;
   }
 
+  /// Fold __kmpc_parallel_level into a constant if possible.
+  ChangeStatus foldParallelLevel(Attributor &A) {
+    Optional<Value *> SimplifiedValueBefore = SimplifiedValue;
+
+    auto &CallerKernelInfoAA = A.getAAFor<AAKernelInfo>(
+        *this, IRPosition::function(*getAnchorScope()), DepClassTy::REQUIRED);
+
+    if (!CallerKernelInfoAA.ParallelLevels.isValidState())
+      return indicatePessimisticFixpoint();
+
+    if (!CallerKernelInfoAA.ReachingKernelEntries.isValidState())
+      return indicatePessimisticFixpoint();
+
+    // If the parallel region of the caller can be at multiple levels, we cannot
+    // fold it.
+    if (CallerKernelInfoAA.ParallelLevels.size() > 1)
+      return indicatePessimisticFixpoint();
+
+    unsigned SPMDCount = 0;
+    for (Kernel K : CallerKernelInfoAA.ReachingKernelEntries) {
+      auto &AA = A.getAAFor<AAKernelInfo>(*this, IRPosition::function(*K),
+                                          DepClassTy::REQUIRED);
+      if (!AA.SPMDCompatibilityTracker.isValidState())
+        return indicatePessimisticFixpoint();
+
+      if (AA.SPMDCompatibilityTracker.isAssumed())
+        ++SPMDCount;
+    }
+
+    // If we cannot deduct parallel region of the caller, we set SimplifiedValue
+    // to nullptr to indicate the associated function call cannot be folded
+    // **for now**.
+    if (CallerKernelInfoAA.ParallelLevels.empty() ||
+        CallerKernelInfoAA.ReachingKernelEntries.empty())
+      assert(!SimplifiedValue.hasValue() &&
+             "SimplifiedValue should keep none at this point");
+    else {
+      const uint8_t Level = CallerKernelInfoAA.ParallelLevels[0];
+      // If the caller can be reached by a SPMD kernel entry, the parallel level
+      // is 1. As a result, if the detected level is not 1, the caller can be at
+      // multiple levels, and we cannot fold it.
+      if (Level != 1 && SPMDCount)
+        return indicatePessimisticFixpoint();
+
+      auto &Ctx = getAnchorValue().getContext();
+      SimplifiedValue = ConstantInt::get(Type::getInt8Ty(Ctx), Level);
+    }
+
+    return SimplifiedValue == SimplifiedValueBefore ? ChangeStatus::UNCHANGED
+                                                    : ChangeStatus::CHANGED;
+  }
+
   /// An optional value the associated value is assumed to fold to. That is, we
   /// assume the associated value (which is a call) can be replaced by this
   /// simplified value.
@@ -3796,6 +3910,19 @@ void OpenMPOpt::registerAAs(bool IsModulePass) {
           IRPosition::callsite_returned(*CI), /* QueryingAA */ nullptr,
           DepClassTy::NONE, /* ForceUpdate */ false,
           /* UpdateAfterInit */ false);
+      return false;
+    });
+
+    auto &ParallelLevelRFI = OMPInfoCache.RFIs[OMPRTL___kmpc_parallel_level];
+    ParallelLevelRFI.foreachUse(SCC, [&](Use &U, Function &) {
+      CallInst *CI = OpenMPOpt::getCallIfRegularCall(U, &ParallelLevelRFI);
+      if (!CI)
+        return false;
+      A.getOrCreateAAFor<AAFoldRuntimeCall>(
+          IRPosition::callsite_returned(*CI), /* QueryingAA */ nullptr,
+          DepClassTy::NONE, /* ForceUpdate */ false,
+          /* UpdateAfterInit */ false);
+
       return false;
     });
   }
