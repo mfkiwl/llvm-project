@@ -85,6 +85,7 @@ static void __kmpc_generic_kernel_deinit() {
 static void __kmpc_spmd_kernel_init(bool IsSPMDGuarded, bool RequiresFullRuntime) {
   PRINT0(LD_IO, "call to __kmpc_spmd_kernel_init\n");
 
+  is_guarded = IsSPMDGuarded;
   setExecutionParameters(IsSPMDGuarded ? SpmdGuarded : Spmd,
                          RequiresFullRuntime ? RuntimeInitialized
                                              : RuntimeUninitialized);
@@ -165,8 +166,9 @@ EXTERN int8_t __kmpc_is_spmd_exec_mode() {
           (execution_param & ModeMask) == SpmdGuarded);
 }
 
-EXTERN __attribute__((used,retain,weak)) int8_t __kmpc_is_spmd_guarded_exec_mode() {
-   return ((execution_param & ModeMask) == SpmdGuarded);
+EXTERN int8_t __kmpc_is_spmd_guarded_exec_mode() {
+   //return ((execution_param & ModeMask) == SpmdGuarded);
+   return is_guarded;
 }
 
 EXTERN int8_t __kmpc_is_generic_main_thread(kmp_int32 Tid) {
