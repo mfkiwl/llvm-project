@@ -3116,7 +3116,7 @@ struct AAKernelInfoFunction : AAKernelInfo {
               M, OMPRTL___kmpc_get_hardware_thread_id_in_block);
       FunctionCallee IsSPMDGuardedFn =
           OMPInfoCache.OMPBuilder.getOrCreateRuntimeFunction(
-              M, OMPRTL___kmpc_is_spmd_guarded_exec_mode);
+              M, OMPRTL___kmpc_is_spmd_guarding_required);
       Value *Tid =
           OMPInfoCache.OMPBuilder.Builder.CreateCall(HardwareTidFn, {});
       Value *IsSPMDGuarded =

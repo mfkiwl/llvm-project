@@ -62,4 +62,6 @@ uint32_t SHARED(execution_param);
 ////////////////////////////////////////////////////////////////////////////////
 void *SHARED(ReductionScratchpadPtr);
 
+int8_t is_guarding_required;
+
 #pragma omp end declare target

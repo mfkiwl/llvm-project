@@ -301,14 +301,14 @@ EXTERN void __kmpc_parallel_51(kmp_Ident *ident, kmp_int32 global_tid,
 
   if (__kmpc_is_spmd_exec_mode()) {
     // Store spmd_guarded status to check after the parallel region executes.
-    int is_spmd_guarded = ((execution_param & ModeMask) == SpmdGuarded);
+    int is_spmd_guarded = __kmpc_is_spmd_guarded_exec_mode();
     if (is_spmd_guarded)
-      is_guarded = 0;
+      is_guarding_required = 0;
 
     __kmp_invoke_microtask(global_tid, 0, fn, args, nargs);
 
     if (is_spmd_guarded)
-      is_guarded = 1;
+      is_guarding_required = 1;
     return;
   }
 

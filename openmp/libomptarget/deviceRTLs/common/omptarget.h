@@ -257,7 +257,7 @@ extern omptarget_nvptx_ThreadPrivateContext *
     EXTERN_SHARED(omptarget_nvptx_threadPrivateContext);
 
 extern uint32_t EXTERN_SHARED(execution_param);
-extern int8_t is_guarded;
+extern int8_t is_guarding_required;
 extern void *EXTERN_SHARED(ReductionScratchpadPtr);
 
 ////////////////////////////////////////////////////////////////////////////////
