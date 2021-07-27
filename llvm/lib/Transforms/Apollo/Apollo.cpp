@@ -237,8 +237,7 @@ struct Apollo : public ModulePass {
       IRB.SetInsertPoint(ThenTI);
       CallBase *ApolloRegionCreateCI = IRB.CreateCall(
           ApolloRegionCreate, {IRB.getInt32(LoopInitCIVector.size()), SrcLocStr,
-                               // +1 to include the default case 0
-                               IRB.getInt32(NumThreadsList.size() + 1)});
+                               IRB.getInt32(NumThreadsList.size())});
       IRB.CreateStore(ApolloRegionCreateCI, GV);
 
       // Instrument with __apollo_region_begin.
@@ -567,12 +566,14 @@ struct Apollo : public ModulePass {
       };
 
       // Create different number of threads cases.
-      // CaseNo starts from 1, 0 is the default case
-      int CaseNo = 1;
+      unsigned int CaseNo = 0;
       for (unsigned NumThreads : NumThreadsList) {
         CreateCase(CaseNo, NumThreads);
         CaseNo++;
       }
+      assert(CaseNo == NumThreadsList.size() &&
+             "Expected the some number of cases and number of threads in the "
+             "list");
 
       OMPIRB.finalize();
 
