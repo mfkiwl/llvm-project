@@ -680,6 +680,47 @@ Attributor::getAssumedConstant(const IRPosition &IRP,
   // First check all callbacks provided by outside AAs. If any of them returns
   // a non-null value that is different from the associated value, or None, we
   // assume it's simpliied.
+
+if (!SimplificationCallbacks[IRP].empty()) {
+    dbgs() << "[Attributor] GAC consensus for " << AA.getIRPosition() << "\n";
+    Optional<Constant *> ConsensusCBVal;
+    for (auto &CB : SimplificationCallbacks[IRP]) {
+      auto CBVal = CB(IRP, &AA, UsedAssumedInformation);
+      if (!CBVal.hasValue()) {
+        dbgs() << "[Attributor] consensus found nullptr bail out\n";
+        return llvm::None;
+      }
+      if (!isa_and_nonnull<Constant>(*CBVal)) {
+        dbgs() << "[Attributor] consensus found nullptr or non-const bail out\n";
+        return nullptr;
+      }
+    }
+
+    for (auto &CB : SimplificationCallbacks[IRP]) {
+      auto CBVal = CB(IRP, &AA, UsedAssumedInformation);
+      if (!ConsensusCBVal.hasValue()) {
+        ConsensusCBVal = cast<Constant>(*CBVal);
+        dbgs() << "[Attributor] consensus init val\n";
+        continue;
+      }
+
+      if (ConsensusCBVal != cast<Constant>(*CBVal)) {
+        dbgs() << "[Attributor] consensus failed return None\n";
+        return llvm::None;
+      }
+    }
+
+    dbgs() << "[Attributor] consensus reached, return val ";
+    if (ConsensusCBVal.getValue())
+      dbgs() << *ConsensusCBVal.getValue();
+    else
+      dbgs() << "null";
+    dbgs() << "\n";
+    return ConsensusCBVal;
+  }
+
+
+#if 0
   for (auto &CB : SimplificationCallbacks[IRP]) {
     Optional<Value *> SimplifiedV = CB(IRP, &AA, UsedAssumedInformation);
     if (!SimplifiedV.hasValue())
@@ -688,6 +729,7 @@ Attributor::getAssumedConstant(const IRPosition &IRP,
       return cast<Constant>(*SimplifiedV);
     return nullptr;
   }
+  #endif
   const auto &ValueSimplifyAA =
       getAAFor<AAValueSimplify>(AA, IRP, DepClassTy::NONE);
   Optional<Value *> SimplifiedV =
@@ -718,8 +760,39 @@ Attributor::getAssumedSimplified(const IRPosition &IRP,
   // First check all callbacks provided by outside AAs. If any of them returns
   // a non-null value that is different from the associated value, or None, we
   // assume it's simpliied.
-  for (auto &CB : SimplificationCallbacks[IRP])
-    return CB(IRP, AA, UsedAssumedInformation);
+  if (!SimplificationCallbacks[IRP].empty()) {
+    dbgs() << "[Attributor] GAS consensus for " << AA->getIRPosition() << "\n";
+    Optional<Value *> ConsensusCBVal;
+    for (auto &CB : SimplificationCallbacks[IRP]) {
+      auto CBVal = CB(IRP, AA, UsedAssumedInformation);
+      if (!CBVal.hasValue()) {
+        dbgs() << "[Attributor] consensus found nullptr bail out\n";
+        return nullptr;
+      }
+    }
+
+    for (auto &CB : SimplificationCallbacks[IRP]) {
+      auto CBVal = CB(IRP, AA, UsedAssumedInformation);
+      if (!ConsensusCBVal.hasValue()) {
+        ConsensusCBVal = CBVal;
+        dbgs() << "[Attributor] consensus init val\n";
+        continue;
+      }
+
+      if (ConsensusCBVal != CBVal) {
+        dbgs() << "[Attributor] consensus failed return none\n";
+        return nullptr;
+      }
+    }
+
+    dbgs() << "[Attributor] consensus reached, return val ";
+    if (ConsensusCBVal.getValue())
+      dbgs() << *ConsensusCBVal.getValue();
+    else
+      dbgs() << "null";
+    dbgs() << "\n";
+    return ConsensusCBVal;
+  }
 
   // If no high-level/outside simplification occured, use AAValueSimplify.
   const auto &ValueSimplifyAA =

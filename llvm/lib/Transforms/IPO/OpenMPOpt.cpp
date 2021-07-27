@@ -2844,8 +2844,8 @@ struct AAKernelInfoFunction : AAKernelInfo {
       // __kmpc_target_init or
       // __kmpc_target_deinit call. We will answer this one with the internal
       // state.
-      if (!SPMDCompatibilityTracker.isValidState())
-        return nullptr;
+      //if (!SPMDCompatibilityTracker.isValidState())
+      //  return nullptr;
       if (!SPMDCompatibilityTracker.isAtFixpoint()) {
         if (AA)
           A.recordDependence(*this, *AA, DepClassTy::OPTIONAL);
