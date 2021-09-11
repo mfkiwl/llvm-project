@@ -17,6 +17,8 @@
 
 using namespace _OMP;
 
+extern uint32_t __omp_rtl_debug_kind;
+
 struct DeviceEnvironmentTy {
   uint32_t DebugKind;
   uint32_t NumDevices;
