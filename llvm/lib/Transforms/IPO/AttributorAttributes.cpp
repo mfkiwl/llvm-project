@@ -1132,6 +1132,8 @@ struct AAPointerInfoImpl
     };
 
     const bool CanUseCFGResoning = CanIgnoreThreading(LI);
+    LLVM_DEBUG(dbgs() << "Can use CFG reasoning: " << CanUseCFGResoning
+                      << "\n");
     InformationCache &InfoCache = A.getInfoCache();
     const DominatorTree *DT =
         InfoCache.getAnalysisResultForFunction<DominatorTreeAnalysis>(Scope);
@@ -3448,7 +3450,7 @@ struct AAIsDeadValueImpl : public AAIsDead {
   }
 
   /// See AbstractAttribute::getAsStr().
-  const std::string getAsStr() const override {
+  virtual const std::string getAsStr() const override {
     return isAssumedDead() ? "assumed-dead" : "assumed-live";
   }
 
@@ -3522,6 +3524,15 @@ struct AAIsDeadFloating : public AAIsDeadValueImpl {
       else
         removeAssumedBits(HAS_NO_EFFECT);
     }
+  }
+
+  /// See AbstractAttribute::getAsStr().
+  const std::string getAsStr() const override {
+    Instruction *I = dyn_cast<Instruction>(&getAssociatedValue());
+    if (isa_and_nonnull<StoreInst>(I))
+      if (isValidState())
+        return "assumed-dead-store";
+    return AAIsDeadValueImpl::getAsStr();
   }
 
   bool isDeadStore(Attributor &A, StoreInst &SI) {
