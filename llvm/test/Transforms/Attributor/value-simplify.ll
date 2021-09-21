@@ -380,13 +380,13 @@ define i32* @complicated_args_inalloca(i32* %arg) {
 ; IS__CGSCC_OPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@complicated_args_inalloca
 ; IS__CGSCC_OPM-SAME: (i32* nofree noundef nonnull readnone returned dereferenceable(4) "no-capture-maybe-returned" [[ARG:%.*]]) #[[ATTR1]] {
-; IS__CGSCC_OPM-NEXT:    [[CALL:%.*]] = call i32* @test_inalloca(i32* noalias nofree noundef nonnull writeonly inalloca(i32) dereferenceable(4) "no-capture-maybe-returned" [[ARG]]) #[[ATTR6:[0-9]+]]
+; IS__CGSCC_OPM-NEXT:    [[CALL:%.*]] = call i32* @test_inalloca(i32* noalias nofree noundef nonnull writeonly inalloca(i32) dereferenceable(4) "no-capture-maybe-returned" [[ARG]]) #[[ATTR7:[0-9]+]]
 ; IS__CGSCC_OPM-NEXT:    ret i32* [[CALL]]
 ;
 ; IS__CGSCC_NPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@complicated_args_inalloca
 ; IS__CGSCC_NPM-SAME: (i32* nofree noundef nonnull readnone returned dereferenceable(4) "no-capture-maybe-returned" [[ARG:%.*]]) #[[ATTR1]] {
-; IS__CGSCC_NPM-NEXT:    [[CALL:%.*]] = call i32* @test_inalloca(i32* noalias nofree noundef nonnull writeonly inalloca(i32) dereferenceable(4) "no-capture-maybe-returned" [[ARG]]) #[[ATTR5:[0-9]+]]
+; IS__CGSCC_NPM-NEXT:    [[CALL:%.*]] = call i32* @test_inalloca(i32* noalias nofree noundef nonnull writeonly inalloca(i32) dereferenceable(4) "no-capture-maybe-returned" [[ARG]]) #[[ATTR6:[0-9]+]]
 ; IS__CGSCC_NPM-NEXT:    ret i32* [[CALL]]
 ;
   %call = call i32* @test_inalloca(i32* inalloca(i32) %arg)
@@ -419,15 +419,15 @@ define i32* @complicated_args_preallocated() {
 ; IS__CGSCC_OPM: Function Attrs: nofree norecurse nosync nounwind willreturn
 ; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@complicated_args_preallocated
 ; IS__CGSCC_OPM-SAME: () #[[ATTR2:[0-9]+]] {
-; IS__CGSCC_OPM-NEXT:    [[C:%.*]] = call token @llvm.call.preallocated.setup(i32 noundef 1) #[[ATTR7:[0-9]+]]
-; IS__CGSCC_OPM-NEXT:    [[CALL:%.*]] = call i32* @test_preallocated(i32* noalias nocapture nofree noundef writeonly preallocated(i32) align 1073741824 null) #[[ATTR6]] [ "preallocated"(token [[C]]) ]
+; IS__CGSCC_OPM-NEXT:    [[C:%.*]] = call token @llvm.call.preallocated.setup(i32 noundef 1) #[[ATTR8:[0-9]+]]
+; IS__CGSCC_OPM-NEXT:    [[CALL:%.*]] = call i32* @test_preallocated(i32* noalias nocapture nofree noundef writeonly preallocated(i32) align 1073741824 null) #[[ATTR9:[0-9]+]] [ "preallocated"(token [[C]]) ]
 ; IS__CGSCC_OPM-NEXT:    ret i32* [[CALL]]
 ;
 ; IS__CGSCC_NPM: Function Attrs: nofree norecurse nosync nounwind willreturn
 ; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@complicated_args_preallocated
 ; IS__CGSCC_NPM-SAME: () #[[ATTR2:[0-9]+]] {
-; IS__CGSCC_NPM-NEXT:    [[C:%.*]] = call token @llvm.call.preallocated.setup(i32 noundef 1) #[[ATTR6:[0-9]+]]
-; IS__CGSCC_NPM-NEXT:    [[CALL:%.*]] = call i32* @test_preallocated(i32* noalias nocapture nofree noundef writeonly preallocated(i32) align 1073741824 null) #[[ATTR5]] [ "preallocated"(token [[C]]) ]
+; IS__CGSCC_NPM-NEXT:    [[C:%.*]] = call token @llvm.call.preallocated.setup(i32 noundef 1) #[[ATTR7:[0-9]+]]
+; IS__CGSCC_NPM-NEXT:    [[CALL:%.*]] = call i32* @test_preallocated(i32* noalias nocapture nofree noundef writeonly preallocated(i32) align 1073741824 null) #[[ATTR8:[0-9]+]] [ "preallocated"(token [[C]]) ]
 ; IS__CGSCC_NPM-NEXT:    ret i32* [[CALL]]
 ;
   %c = call token @llvm.call.preallocated.setup(i32 1)
@@ -538,7 +538,7 @@ define void @complicated_args_byval() {
 ; IS__CGSCC_OPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@complicated_args_byval
 ; IS__CGSCC_OPM-SAME: () #[[ATTR1]] {
-; IS__CGSCC_OPM-NEXT:    call void @test_byval(%struct.X* noalias nocapture nofree noundef nonnull readnone byval([[STRUCT_X:%.*]]) align 8 dereferenceable(8) @S) #[[ATTR8:[0-9]+]]
+; IS__CGSCC_OPM-NEXT:    call void @test_byval(%struct.X* noalias nocapture nofree noundef nonnull readnone byval([[STRUCT_X:%.*]]) align 8 dereferenceable(8) @S) #[[ATTR10:[0-9]+]]
 ; IS__CGSCC_OPM-NEXT:    ret void
 ;
 ; IS__CGSCC_NPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
@@ -817,14 +817,25 @@ define i1 @test_merge_with_undef_values_ptr(i1 %c) {
   ret i1 %r1
 }
 define internal i1 @undef_then_null(i1 %c, i32* %i32Aptr, i32* %i32Bptr) {
-; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
-; IS__CGSCC____-LABEL: define {{[^@]+}}@undef_then_null
-; IS__CGSCC____-SAME: (i1 [[C:%.*]]) #[[ATTR1]] {
-; IS__CGSCC____-NEXT:    br i1 [[C]], label [[A:%.*]], label [[B:%.*]]
-; IS__CGSCC____:       a:
-; IS__CGSCC____-NEXT:    ret i1 undef
-; IS__CGSCC____:       b:
-; IS__CGSCC____-NEXT:    ret i1 undef
+; IS__CGSCC_OPM: Function Attrs: nofree nosync nounwind readnone willreturn
+; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@undef_then_null
+; IS__CGSCC_OPM-SAME: (i1 [[C:%.*]]) #[[ATTR6:[0-9]+]] {
+; IS__CGSCC_OPM-NEXT:    [[OR:%.*]] = or i1 false, [[C]]
+; IS__CGSCC_OPM-NEXT:    br i1 [[OR]], label [[A:%.*]], label [[B:%.*]]
+; IS__CGSCC_OPM:       a:
+; IS__CGSCC_OPM-NEXT:    ret i1 undef
+; IS__CGSCC_OPM:       b:
+; IS__CGSCC_OPM-NEXT:    ret i1 undef
+;
+; IS__CGSCC_NPM: Function Attrs: nofree nosync nounwind readnone willreturn
+; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@undef_then_null
+; IS__CGSCC_NPM-SAME: (i1 [[C:%.*]]) #[[ATTR5:[0-9]+]] {
+; IS__CGSCC_NPM-NEXT:    [[OR:%.*]] = or i1 false, [[C]]
+; IS__CGSCC_NPM-NEXT:    br i1 [[OR]], label [[A:%.*]], label [[B:%.*]]
+; IS__CGSCC_NPM:       a:
+; IS__CGSCC_NPM-NEXT:    ret i1 undef
+; IS__CGSCC_NPM:       b:
+; IS__CGSCC_NPM-NEXT:    ret i1 undef
 ;
   %cmp1 = icmp eq i32* %i32Aptr, %i32Bptr
   %cmp2 = icmp eq i1 %cmp1, false
@@ -848,14 +859,25 @@ define i1 @test_merge_with_undef_values(i1 %c) {
 }
 define internal i1 @undef_then_1(i1 %c, i32 %i32A, i32 %i32B) {
 ;
-; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
-; IS__CGSCC____-LABEL: define {{[^@]+}}@undef_then_1
-; IS__CGSCC____-SAME: (i1 [[C:%.*]]) #[[ATTR1]] {
-; IS__CGSCC____-NEXT:    br i1 [[C]], label [[A:%.*]], label [[B:%.*]]
-; IS__CGSCC____:       a:
-; IS__CGSCC____-NEXT:    ret i1 undef
-; IS__CGSCC____:       b:
-; IS__CGSCC____-NEXT:    ret i1 undef
+; IS__CGSCC_OPM: Function Attrs: nofree nosync nounwind readnone willreturn
+; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@undef_then_1
+; IS__CGSCC_OPM-SAME: (i1 [[C:%.*]]) #[[ATTR6]] {
+; IS__CGSCC_OPM-NEXT:    [[OR:%.*]] = or i1 false, [[C]]
+; IS__CGSCC_OPM-NEXT:    br i1 [[OR]], label [[A:%.*]], label [[B:%.*]]
+; IS__CGSCC_OPM:       a:
+; IS__CGSCC_OPM-NEXT:    ret i1 undef
+; IS__CGSCC_OPM:       b:
+; IS__CGSCC_OPM-NEXT:    ret i1 undef
+;
+; IS__CGSCC_NPM: Function Attrs: nofree nosync nounwind readnone willreturn
+; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@undef_then_1
+; IS__CGSCC_NPM-SAME: (i1 [[C:%.*]]) #[[ATTR5]] {
+; IS__CGSCC_NPM-NEXT:    [[OR:%.*]] = or i1 false, [[C]]
+; IS__CGSCC_NPM-NEXT:    br i1 [[OR]], label [[A:%.*]], label [[B:%.*]]
+; IS__CGSCC_NPM:       a:
+; IS__CGSCC_NPM-NEXT:    ret i1 undef
+; IS__CGSCC_NPM:       b:
+; IS__CGSCC_NPM-NEXT:    ret i1 undef
 ;
   %cmp1 = icmp eq i32 %i32A, %i32B
   %cmp2 = icmp eq i1 %cmp1, false
@@ -1129,17 +1151,21 @@ join:
 ; IS__CGSCC_OPM: attributes #[[ATTR3]] = { argmemonly nofree norecurse nosync nounwind willreturn writeonly }
 ; IS__CGSCC_OPM: attributes #[[ATTR4]] = { argmemonly nofree norecurse nosync nounwind writeonly }
 ; IS__CGSCC_OPM: attributes #[[ATTR5]] = { nofree norecurse nosync nounwind willreturn writeonly }
-; IS__CGSCC_OPM: attributes #[[ATTR6]] = { nounwind readnone willreturn }
-; IS__CGSCC_OPM: attributes #[[ATTR7]] = { willreturn }
-; IS__CGSCC_OPM: attributes #[[ATTR8]] = { nounwind willreturn writeonly }
+; IS__CGSCC_OPM: attributes #[[ATTR6]] = { nofree nosync nounwind readnone willreturn }
+; IS__CGSCC_OPM: attributes #[[ATTR7]] = { readnone willreturn }
+; IS__CGSCC_OPM: attributes #[[ATTR8]] = { willreturn }
+; IS__CGSCC_OPM: attributes #[[ATTR9]] = { nounwind readnone willreturn }
+; IS__CGSCC_OPM: attributes #[[ATTR10]] = { nounwind willreturn writeonly }
 ;.
 ; IS__CGSCC_NPM: attributes #[[ATTR0:[0-9]+]] = { nofree nosync nounwind willreturn }
 ; IS__CGSCC_NPM: attributes #[[ATTR1]] = { nofree norecurse nosync nounwind readnone willreturn }
 ; IS__CGSCC_NPM: attributes #[[ATTR2]] = { nofree norecurse nosync nounwind willreturn }
 ; IS__CGSCC_NPM: attributes #[[ATTR3]] = { argmemonly nofree norecurse nosync nounwind willreturn writeonly }
 ; IS__CGSCC_NPM: attributes #[[ATTR4]] = { nofree norecurse nosync nounwind willreturn writeonly }
-; IS__CGSCC_NPM: attributes #[[ATTR5]] = { nounwind readnone willreturn }
-; IS__CGSCC_NPM: attributes #[[ATTR6]] = { willreturn }
+; IS__CGSCC_NPM: attributes #[[ATTR5]] = { nofree nosync nounwind readnone willreturn }
+; IS__CGSCC_NPM: attributes #[[ATTR6]] = { readnone willreturn }
+; IS__CGSCC_NPM: attributes #[[ATTR7]] = { willreturn }
+; IS__CGSCC_NPM: attributes #[[ATTR8]] = { nounwind readnone willreturn }
 ;.
 ; CHECK: [[RNG0]] = !{i32 0, i32 -2147483648}
 ;.

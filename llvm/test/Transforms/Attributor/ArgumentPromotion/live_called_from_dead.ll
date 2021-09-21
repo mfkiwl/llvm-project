@@ -11,7 +11,7 @@ define internal void @dead() {
 ; IS__CGSCC_OPM-NEXT:    ret void
 ;
 ; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@dead() {
-; IS__CGSCC_NPM-NEXT:    [[TMP1:%.*]] = call i32 @test(i32* nonnull align 1073741824 dereferenceable(4) null)
+; IS__CGSCC_NPM-NEXT:    [[TMP1:%.*]] = call i32 @test()
 ; IS__CGSCC_NPM-NEXT:    ret void
 ;
   call i32 @test(i32* null, i32* null)
@@ -19,15 +19,23 @@ define internal void @dead() {
 }
 
 define internal i32 @test(i32* %X, i32* %Y) {
-; IS__CGSCC____: Function Attrs: argmemonly nofree norecurse nosync nounwind willreturn writeonly
-; IS__CGSCC____-LABEL: define {{[^@]+}}@test
-; IS__CGSCC____-SAME: (i32* noalias nocapture nofree noundef nonnull writeonly align 4 dereferenceable(4) [[X:%.*]]) #[[ATTR0:[0-9]+]] {
-; IS__CGSCC____-NEXT:    br i1 true, label [[LIVE:%.*]], label [[DEAD:%.*]]
-; IS__CGSCC____:       live:
-; IS__CGSCC____-NEXT:    store i32 0, i32* [[X]], align 4
-; IS__CGSCC____-NEXT:    ret i32 undef
-; IS__CGSCC____:       dead:
-; IS__CGSCC____-NEXT:    unreachable
+; IS__CGSCC_OPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
+; IS__CGSCC_OPM-LABEL: define {{[^@]+}}@test
+; IS__CGSCC_OPM-SAME: (i32* noalias nocapture nofree noundef nonnull writeonly align 4 dereferenceable(4) [[X:%.*]]) #[[ATTR0:[0-9]+]] {
+; IS__CGSCC_OPM-NEXT:    br i1 true, label [[LIVE:%.*]], label [[DEAD:%.*]]
+; IS__CGSCC_OPM:       live:
+; IS__CGSCC_OPM-NEXT:    ret i32 undef
+; IS__CGSCC_OPM:       dead:
+; IS__CGSCC_OPM-NEXT:    unreachable
+;
+; IS__CGSCC_NPM: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
+; IS__CGSCC_NPM-LABEL: define {{[^@]+}}@test
+; IS__CGSCC_NPM-SAME: () #[[ATTR0:[0-9]+]] {
+; IS__CGSCC_NPM-NEXT:    br i1 true, label [[LIVE:%.*]], label [[DEAD:%.*]]
+; IS__CGSCC_NPM:       live:
+; IS__CGSCC_NPM-NEXT:    ret i32 undef
+; IS__CGSCC_NPM:       dead:
+; IS__CGSCC_NPM-NEXT:    unreachable
 ;
   br i1 true, label %live, label %dead
 live:
@@ -42,9 +50,7 @@ dead:
 define internal i32 @caller(i32* %B) {
 ; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
 ; IS__CGSCC____-LABEL: define {{[^@]+}}@caller
-; IS__CGSCC____-SAME: () #[[ATTR1:[0-9]+]] {
-; IS__CGSCC____-NEXT:    [[A:%.*]] = alloca i32, align 4
-; IS__CGSCC____-NEXT:    [[C:%.*]] = call i32 @test(i32* noalias nocapture nofree noundef nonnull writeonly align 4 dereferenceable(4) [[A]]) #[[ATTR2:[0-9]+]]
+; IS__CGSCC____-SAME: () #[[ATTR0:[0-9]+]] {
 ; IS__CGSCC____-NEXT:    ret i32 undef
 ;
   %A = alloca i32
@@ -54,17 +60,11 @@ define internal i32 @caller(i32* %B) {
 }
 
 define i32 @callercaller() {
-; IS__TUNIT____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
-; IS__TUNIT____-LABEL: define {{[^@]+}}@callercaller
-; IS__TUNIT____-SAME: () #[[ATTR0:[0-9]+]] {
-; IS__TUNIT____-NEXT:    [[B:%.*]] = alloca i32, align 4
-; IS__TUNIT____-NEXT:    ret i32 0
-;
-; IS__CGSCC____: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
-; IS__CGSCC____-LABEL: define {{[^@]+}}@callercaller
-; IS__CGSCC____-SAME: () #[[ATTR1]] {
-; IS__CGSCC____-NEXT:    [[B:%.*]] = alloca i32, align 4
-; IS__CGSCC____-NEXT:    ret i32 0
+; CHECK: Function Attrs: nofree norecurse nosync nounwind readnone willreturn
+; CHECK-LABEL: define {{[^@]+}}@callercaller
+; CHECK-SAME: () #[[ATTR0:[0-9]+]] {
+; CHECK-NEXT:    [[B:%.*]] = alloca i32, align 4
+; CHECK-NEXT:    ret i32 0
 ;
   %B = alloca i32
   store i32 2, i32* %B
@@ -73,9 +73,5 @@ define i32 @callercaller() {
 }
 
 ;.
-; IS__TUNIT____: attributes #[[ATTR0]] = { nofree norecurse nosync nounwind readnone willreturn }
-;.
-; IS__CGSCC____: attributes #[[ATTR0]] = { argmemonly nofree norecurse nosync nounwind willreturn writeonly }
-; IS__CGSCC____: attributes #[[ATTR1]] = { nofree norecurse nosync nounwind readnone willreturn }
-; IS__CGSCC____: attributes #[[ATTR2]] = { nofree nosync nounwind willreturn writeonly }
+; CHECK: attributes #[[ATTR0]] = { nofree norecurse nosync nounwind readnone willreturn }
 ;.
