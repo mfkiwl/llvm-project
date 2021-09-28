@@ -2685,6 +2685,7 @@ ChangeStatus AAExecutionDomainFunction::updateImpl(Attributor &A) {
       case Intrinsic::memset:
       case Intrinsic::memcpy:
       case Intrinsic::memmove:
+      case Intrinsic::experimental_noalias_scope_decl:
         return llvm::None;
       default:
         break;
