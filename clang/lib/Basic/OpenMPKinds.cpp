@@ -140,7 +140,8 @@ unsigned clang::getOpenMPSimpleClauseType(OpenMPClauseKind Kind,
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_flush:
@@ -392,7 +393,8 @@ const char *clang::getOpenMPSimpleClauseTypeName(OpenMPClauseKind Kind,
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_flush:

@@ -560,7 +560,7 @@ IRBuilder<>::InsertPoint OpenMPIRBuilder::CreateParallel(
     RealArgs.append(std::begin(ForkCallArgs), std::end(ForkCallArgs));
     RealArgs.append(CI->arg_begin() + /* tid & bound tid */ 2, CI->arg_end());
 
-    CallInst *ForkCI = Builder.CreateCall(RTLFn, RealArgs);
+    Builder.CreateCall(RTLFn, RealArgs);
 
     LLVM_DEBUG(dbgs() << "With fork_call placed: "
                       << *Builder.GetInsertBlock()->getParent() << "\n");

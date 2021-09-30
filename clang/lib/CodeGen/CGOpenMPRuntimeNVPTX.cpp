@@ -2503,7 +2503,10 @@ void CGOpenMPRuntimeNVPTX::emitTeamsCall(CodeGenFunction &CGF,
 
 void CGOpenMPRuntimeNVPTX::emitParallelCall(
     CodeGenFunction &CGF, SourceLocation Loc, llvm::Function *OutlinedFn,
-    ArrayRef<llvm::Value *> CapturedVars, const Expr *IfCond, bool EnableApollo) {
+    ArrayRef<llvm::Value *> CapturedVars, const Expr *IfCond,
+    bool EnableApollo,
+    ArrayRef<llvm::Value *> ApolloFeatureVars,
+    ArrayRef<llvm::Value *> ApolloNumThreadsList) {
   if (!CGF.HaveInsertPoint())
     return;
 

@@ -2118,16 +2118,218 @@ void CGOpenMPRuntime::emitIfClause(CodeGenFunction &CGF, const Expr *Cond,
   CGF.EmitBlock(ContBlock, /*IsFinished=*/true);
 }
 
+#define EnumAttr(Kind) llvm::Attribute::get(Ctx, llvm::Attribute::AttrKind::Kind)
+#define AttributeSet(...)                                                      \
+  llvm::AttributeSet::get(Ctx, ArrayRef<llvm::Attribute>({__VA_ARGS__}))
+
+static llvm::GlobalVariable *
+emitApolloInstrumentationBegin(CodeGenFunction &CGF, SourceLocation Loc,
+                               llvm::OpenMPIRBuilder &OMPBuilder,
+                               ArrayRef<llvm::Value *> ApolloFeatureVars,
+                               ArrayRef<llvm::Value *> ApolloNumThreadsList) {
+  llvm::Module &M = CGF.CGM.getModule();
+  llvm::LLVMContext &Ctx = M.getContext();
+
+  SourceManager &SM = CGF.getContext().getSourceManager();
+  PresumedLoc PLoc = SM.getPresumedLoc(Loc);
+  const char *Filename = PLoc.getFilename();
+  const unsigned LineNo = PLoc.getLine();
+
+  llvm::GlobalVariable *ApolloRegionGV = new llvm::GlobalVariable(
+      M, CGF.Builder.getInt8PtrTy(), /*isConstant=*/false, llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantPointerNull::get(CGF.Builder.getInt8PtrTy()),
+      ".apollo.region.handle." + llvm::Twine(Filename) + ".l" + llvm::Twine(LineNo));
+  ApolloRegionGV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  ApolloRegionGV->setAlignment(llvm::Align(8));
+
+  llvm::FunctionCallee ApolloRegionCreate = M.getOrInsertFunction(
+      "__apollo_region_create",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getInt8PtrTy(), CGF.Builder.getInt32Ty(), CGF.Builder.getInt8PtrTy(),
+      CGF.Builder.getInt32Ty());
+  llvm::FunctionCallee ApolloRegionBegin = M.getOrInsertFunction(
+      "__apollo_region_begin",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getVoidTy(), CGF.Builder.getInt8PtrTy());
+  llvm::FunctionCallee ApolloRegionSetFeature = M.getOrInsertFunction(
+      "__apollo_region_set_feature",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getVoidTy(), CGF.Builder.getInt8PtrTy(), CGF.Builder.getFloatTy());
+  llvm::FunctionCallee ApolloGetPolicy = M.getOrInsertFunction(
+      "__apollo_region_get_policy",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getInt32Ty(), CGF.Builder.getInt8PtrTy());
+
+  llvm::LoadInst *ApolloRegionPtr = CGF.Builder.CreateAlignedLoad(
+      ApolloRegionGV, llvm::MaybeAlign(ApolloRegionGV->getAlignment()));
+
+  auto *ThenBlock = CGF.createBasicBlock("apollo.if.null");
+  auto *ElseBlock = CGF.createBasicBlock("apollo.else");
+  llvm::Value *Cond = CGF.Builder.CreateIsNull(ApolloRegionPtr);
+  CGF.Builder.CreateCondBr(Cond, ThenBlock, ElseBlock);
+
+  CGF.EmitBlock(ThenBlock);
+  // Emit initialization for the apollo region.
+  CGF.Builder.SetInsertPoint(ThenBlock);
+  llvm::Twine LocStr("apollo_region::" + llvm::Twine(Filename) + ".l" +
+                         llvm::Twine(LineNo));
+  llvm::Constant *SrcLocStr = CGF.Builder.CreateGlobalStringPtr(LocStr.str());
+  llvm::CallBase *ApolloRegionCreateCI = CGF.Builder.CreateCall(
+      ApolloRegionCreate, {CGF.Builder.getInt32(ApolloFeatureVars.size()), SrcLocStr,
+                           CGF.Builder.getInt32(ApolloNumThreadsList.size())});
+  CGF.Builder.CreateAlignedStore(ApolloRegionCreateCI, ApolloRegionGV,
+                                 llvm::MaybeAlign(ApolloRegionGV->getAlignment()));
+
+  CGF.EmitBlock(ElseBlock);
+  // Re-load to get the apollo region pointer after creating it.
+  ApolloRegionPtr = CGF.Builder.CreateAlignedLoad(
+      ApolloRegionGV, llvm::MaybeAlign(ApolloRegionGV->getAlignment()));
+  CGF.Builder.CreateCall(ApolloRegionBegin, {ApolloRegionPtr});
+
+  for(llvm::Value *V : ApolloFeatureVars) {
+    auto CastToFP = [&](llvm::Value *V) {
+      llvm::Value *FPV = nullptr;
+      llvm::Type *VTy = V->getType();
+      if (VTy->isIntegerTy())
+        FPV = CGF.Builder.CreateSIToFP(V, CGF.Builder.getFloatTy());
+      else if (VTy->isDoubleTy())
+        FPV = CGF.Builder.CreateFPCast(V, CGF.Builder.getFloatTy());
+      else if (VTy->isFloatTy())
+        FPV = V;
+      else
+        assert(false && "Unsupported casting of feature variable");
+
+      return FPV;
+    };
+
+    llvm::Value *FPV = CastToFP(V);
+    CGF.Builder.CreateCall(ApolloRegionSetFeature, {ApolloRegionPtr, FPV});
+  }
+
+  OMPBuilder.updateToLocation(CGF.Builder);
+  SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(CGF.Builder);
+  auto *Ident = OMPBuilder.getOrCreateIdent(SrcLocStr);
+  auto *ThreadID = OMPBuilder.getOrCreateThreadID(Ident);
+
+  auto *ApolloGetPolicyCI = CGF.Builder.CreateCall(ApolloGetPolicy, {ApolloRegionPtr});
+  auto *ContBlock = CGF.createBasicBlock("apollo.cont");
+  auto *Switch = CGF.Builder.CreateSwitch(
+      ApolloGetPolicyCI, ContBlock);
+  auto CreateCase = [&](int CaseNo, llvm::Value *NumThreads) {
+    auto *CaseBlock = CGF.createBasicBlock(".apollo.case" + llvm::Twine(CaseNo));
+    CGF.EmitBlock(CaseBlock);
+    OMPBuilder.updateToLocation(CGF.Builder);
+    // Build call __kmpc_push_num_threads(&Ident, global_tid, num_threads).
+    llvm::Value *Args[] = {
+        Ident,
+        ThreadID,
+        CGF.Builder.CreateIntCast(NumThreads, CGF.Int32Ty, /*isSigned*/ true)
+    };
+    CGF.Builder.CreateCall(
+        OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_push_num_threads),
+        Args);
+    CGF.Builder.CreateBr(ContBlock);
+    Switch->addCase(CGF.Builder.getInt32(CaseNo), CaseBlock);
+  };
+
+  // Create different number of threads cases.
+  unsigned int CaseNo = 0;
+  for (auto *NumThreads: ApolloNumThreadsList) {
+    CreateCase(CaseNo, NumThreads);
+    CaseNo++;
+  }
+
+  assert(CaseNo == ApolloNumThreadsList.size() &&
+         "Expected the some number of cases and number of threads in the "
+         "list");
+
+  CGF.EmitBlock(ContBlock);
+
+  llvm::dbgs() << "=== Func 2\n";
+  ThenBlock->getParent()->dump();
+  llvm::dbgs() << "=== End of Func 2\n";
+
+  return ApolloRegionGV;
+}
+
+static void emitApolloInstrumentationEnd(CodeGenFunction &CGF, llvm::GlobalVariable *ApolloRegionGV) {
+  llvm::Module &M = CGF.CGM.getModule();
+  llvm::LLVMContext &Ctx = M.getContext();
+
+  llvm::FunctionCallee ApolloRegionEnd= M.getOrInsertFunction(
+      "__apollo_region_end",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getVoidTy(), CGF.Builder.getInt8PtrTy());
+
+  llvm::LoadInst *ApolloRegionPtr = CGF.Builder.CreateAlignedLoad(
+      ApolloRegionGV, llvm::MaybeAlign(ApolloRegionGV->getAlignment()));
+  // Instrument with __apollo_region_end.
+  CGF.Builder.CreateCall(ApolloRegionEnd, {ApolloRegionPtr});
+
+  return;
+}
+
+static void emitApolloInstrumentationOutlined(CodeGenFunction &CGF,
+                                              llvm::Function *OutlinedFn,
+                                              llvm::GlobalVariable *ApolloRegionGV) {
+  llvm::Module &M = CGF.CGM.getModule();
+  llvm::LLVMContext &Ctx = M.getContext();
+
+  llvm::FunctionCallee ApolloRegionThreadBegin = M.getOrInsertFunction(
+      "__apollo_region_thread_begin",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getVoidTy(), CGF.Builder.getInt8PtrTy());
+  llvm::FunctionCallee ApolloRegionThreadEnd = M.getOrInsertFunction(
+      "__apollo_region_thread_end",
+      llvm::AttributeList::get(Ctx, AttributeSet(EnumAttr(ArgMemOnly)),
+                         AttributeSet(), {}),
+      CGF.Builder.getVoidTy(), CGF.Builder.getInt8PtrTy());
+
+  auto IP = CGF.Builder.saveIP();
+  CGF.Builder.SetInsertPoint(&OutlinedFn->getEntryBlock(),
+                     OutlinedFn->getEntryBlock().getFirstInsertionPt());
+  llvm::LoadInst *ApolloRegionPtr = CGF.Builder.CreateAlignedLoad(
+      ApolloRegionGV, llvm::MaybeAlign(ApolloRegionGV->getAlignment()));
+  CGF.Builder.CreateCall(ApolloRegionThreadBegin, {ApolloRegionPtr});
+
+  llvm::dbgs() << " 1 OutlinedFn\n";
+  OutlinedFn->dump();
+  llvm::dbgs() << " 1 End of OutlinedFn\n";
+
+  // Find all return instructions in the function and instrument with
+  // __apollo_region_thread_end.
+  for (llvm::BasicBlock &BB : *OutlinedFn)
+    for (llvm::Instruction &I : BB)
+      if (dyn_cast<llvm::ReturnInst>(&I)) {
+        CGF.Builder.SetInsertPoint(&I);
+        CGF.Builder.CreateCall(ApolloRegionThreadEnd, {ApolloRegionPtr});
+      }
+
+  llvm::dbgs() << " 2 OutlinedFn\n";
+  OutlinedFn->dump();
+  llvm::dbgs() << " 2 End of OutlinedFn\n";
+  CGF.Builder.restoreIP(IP);
+}
+
 void CGOpenMPRuntime::emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                                        llvm::Function *OutlinedFn,
                                        ArrayRef<llvm::Value *> CapturedVars,
                                        const Expr *IfCond,
-                                       bool EnableApollo) {
+                                       bool EnableApollo,
+                                       ArrayRef<llvm::Value *> ApolloFeatureVars,
+                                       ArrayRef<llvm::Value *> ApolloNumThreadsList) {
   if (!CGF.HaveInsertPoint())
     return;
   llvm::Value *RTLoc = emitUpdateLocation(CGF, Loc);
   auto &M = CGM.getModule();
-  auto &&ThenGen = [&M, OutlinedFn, CapturedVars, RTLoc, EnableApollo,
+  auto &&ThenGen = [&M, OutlinedFn, CapturedVars, Loc, RTLoc, EnableApollo,
+                    ApolloFeatureVars, ApolloNumThreadsList,
                     this](CodeGenFunction &CGF, PrePostActionTy &) {
     // Build call __kmpc_fork_call(loc, n, microtask, var1, .., varn);
     CGOpenMPRuntime &RT = CGF.CGM.getOpenMPRuntime();
@@ -2141,10 +2343,23 @@ void CGOpenMPRuntime::emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
 
     llvm::FunctionCallee RTLFn =
         OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_fork_call);
-    auto *CI = CGF.EmitRuntimeCall(RTLFn, RealArgs);
+
+    llvm::GlobalVariable *ApolloRegionGV = nullptr;
     if (EnableApollo) {
-      llvm::Metadata *MD[] = {llvm::MDString::get(M.getContext(), "apollo")};
-      CI->setMetadata("metadata.apollo", llvm::MDNode::get(M.getContext(), MD));
+      assert(!ApolloFeatureVars.empty() && "Expected apollo features variables");
+      ApolloRegionGV =
+          emitApolloInstrumentationBegin(CGF, Loc, OMPBuilder, ApolloFeatureVars, ApolloNumThreadsList);
+
+      // Instrument OutlinedFn
+      emitApolloInstrumentationOutlined(CGF, OutlinedFn, ApolloRegionGV);
+    }
+
+    CGF.EmitRuntimeCall(RTLFn, RealArgs);
+
+    if (EnableApollo) {
+      assert(ApolloRegionGV != nullptr &&
+             "Expected non-null for the apollo region pointer");
+      emitApolloInstrumentationEnd(CGF, ApolloRegionGV);
     }
   };
   auto &&ElseGen = [&M, OutlinedFn, CapturedVars, RTLoc, Loc,
@@ -11743,11 +11958,11 @@ llvm::Function *CGOpenMPSIMDRuntime::emitTaskOutlinedFunction(
   llvm_unreachable("Not supported in SIMD-only mode");
 }
 
-void CGOpenMPSIMDRuntime::emitParallelCall(CodeGenFunction &CGF,
-                                           SourceLocation Loc,
-                                           llvm::Function *OutlinedFn,
-                                           ArrayRef<llvm::Value *> CapturedVars,
-                                           const Expr *IfCond, bool EnableApollo) {
+void CGOpenMPSIMDRuntime::emitParallelCall(
+    CodeGenFunction &CGF, SourceLocation Loc, llvm::Function *OutlinedFn,
+    ArrayRef<llvm::Value *> CapturedVars, const Expr *IfCond, bool EnableApollo,
+    ArrayRef<llvm::Value *> ApolloFeatureVars,
+    ArrayRef<llvm::Value *> ApolloNumThreadsList) {
   llvm_unreachable("Not supported in SIMD-only mode");
 }
 

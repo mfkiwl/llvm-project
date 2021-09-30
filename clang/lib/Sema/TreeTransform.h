@@ -9092,10 +9092,18 @@ TreeTransform<Derived>::TransformOMPNowaitClause(OMPNowaitClause *C) {
 
 template <typename Derived>
 OMPClause *
-TreeTransform<Derived>::TransformOMPApolloClause(OMPApolloClause *C) {
+TreeTransform<Derived>::TransformOMPApolloFeaturesClause(OMPApolloFeaturesClause *C) {
   // No need to rebuild this clause, no template-dependent parameters.
   return C;
 }
+
+template <typename Derived>
+OMPClause *
+TreeTransform<Derived>::TransformOMPApolloNumThreadsClause(OMPApolloNumThreadsClause *C) {
+  // No need to rebuild this clause, no template-dependent parameters.
+  return C;
+}
+
 
 template <typename Derived>
 OMPClause *

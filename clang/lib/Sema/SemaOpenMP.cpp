@@ -5432,7 +5432,8 @@ StmtResult Sema::ActOnOpenMPExecutableDirective(
       case OMPC_copyin:
       case OMPC_copyprivate:
       case OMPC_nowait:
-      case OMPC_apollo:
+      case OMPC_apollo_features:
+      case OMPC_apollo_num_threads:
       case OMPC_untied:
       case OMPC_mergeable:
       case OMPC_allocate:
@@ -11683,7 +11684,8 @@ OMPClause *Sema::ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind, Expr *Expr,
   case OMPC_copyin:
   case OMPC_copyprivate:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -12447,7 +12449,8 @@ static OpenMPDirectiveKind getOpenMPCaptureRegionForClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -12886,7 +12889,8 @@ OMPClause *Sema::ActOnOpenMPSimpleClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -13126,7 +13130,7 @@ OMPClause *Sema::ActOnOpenMPSingleExprWithArgClause(
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -13303,9 +13307,6 @@ OMPClause *Sema::ActOnOpenMPClause(OpenMPClauseKind Kind,
   case OMPC_nowait:
     Res = ActOnOpenMPNowaitClause(StartLoc, EndLoc);
     break;
-  case OMPC_apollo:
-    Res = ActOnOpenMPApolloClause(StartLoc, EndLoc);
-    break;
   case OMPC_untied:
     Res = ActOnOpenMPUntiedClause(StartLoc, EndLoc);
     break;
@@ -13416,6 +13417,8 @@ OMPClause *Sema::ActOnOpenMPClause(OpenMPClauseKind Kind,
   case OMPC_exclusive:
   case OMPC_uses_allocators:
   case OMPC_affinity:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   default:
     llvm_unreachable("Clause is not allowed.");
   }
@@ -13428,9 +13431,66 @@ OMPClause *Sema::ActOnOpenMPNowaitClause(SourceLocation StartLoc,
   return new (Context) OMPNowaitClause(StartLoc, EndLoc);
 }
 
-OMPClause *Sema::ActOnOpenMPApolloClause(SourceLocation StartLoc,
+OMPClause *Sema::ActOnOpenMPApolloFeaturesClause(ArrayRef<Expr *> VarList,
+                                         SourceLocation StartLoc,
+                                         SourceLocation LParenLoc,
                                          SourceLocation EndLoc) {
-  return new (Context) OMPApolloClause(StartLoc, EndLoc);
+  SmallVector<Expr *, 8> Vars;
+  for (Expr *RefExpr : VarList) {
+    assert(RefExpr && "NULL expr in OpenMP apollo clause.");
+    Vars.push_back(RefExpr);
+    //SourceLocation ELoc;
+    //SourceRange ERange;
+    //Expr *SimpleRefExpr = RefExpr;
+    //auto Res = getPrivateItem(*this, SimpleRefExpr, ELoc, ERange);
+    //if (Res.second) {
+    //  // It will be analyzed later.
+    //  Vars.push_back(RefExpr);
+    //}
+    //ValueDecl *D = Res.first;
+    //if (!D)
+    //  continue;
+
+    //auto *VD = dyn_cast<VarDecl>(D);
+    //Vars.push_back(VD);
+  }
+
+  assert(!Vars.empty() && "Expected varlist in apollo clause");
+  if (Vars.empty())
+    return nullptr;
+
+  return OMPApolloFeaturesClause::Create(Context, StartLoc, LParenLoc, EndLoc, Vars);
+}
+
+OMPClause *Sema::ActOnOpenMPApolloNumThreadsClause(ArrayRef<Expr *> VarList,
+                                         SourceLocation StartLoc,
+                                         SourceLocation LParenLoc,
+                                         SourceLocation EndLoc) {
+  SmallVector<Expr *, 8> Vars;
+  for (Expr *RefExpr : VarList) {
+    assert(RefExpr && "NULL expr in OpenMP apollo_num_threads clause.");
+    Vars.push_back(RefExpr);
+    //SourceLocation ELoc;
+    //SourceRange ERange;
+    //Expr *SimpleRefExpr = RefExpr;
+    //auto Res = getPrivateItem(*this, SimpleRefExpr, ELoc, ERange);
+    //if (Res.second) {
+    //  // It will be analyzed later.
+    //  Vars.push_back(RefExpr);
+    //}
+    //ValueDecl *D = Res.first;
+    //if (!D)
+    //  continue;
+
+    //auto *VD = dyn_cast<VarDecl>(D);
+    //Vars.push_back(VD);
+  }
+
+  assert(!Vars.empty() && "Expected varlist in apollo_num_threads clause");
+  if (Vars.empty())
+    return nullptr;
+
+  return OMPApolloNumThreadsClause::Create(Context, StartLoc, LParenLoc, EndLoc, Vars);
 }
 
 OMPClause *Sema::ActOnOpenMPUntiedClause(SourceLocation StartLoc,
@@ -13645,6 +13705,12 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
     Res = ActOnOpenMPAffinityClause(StartLoc, LParenLoc, ColonLoc, EndLoc,
                                     DepModOrTailExpr, VarList);
     break;
+  case OMPC_apollo_features:
+    Res = ActOnOpenMPApolloFeaturesClause(VarList, StartLoc, LParenLoc, EndLoc);
+    break;
+  case OMPC_apollo_num_threads:
+    Res = ActOnOpenMPApolloNumThreadsClause(VarList, StartLoc, LParenLoc, EndLoc);
+    break;
   case OMPC_if:
   case OMPC_depobj:
   case OMPC_final:
@@ -13658,7 +13724,6 @@ OMPClause *Sema::ActOnOpenMPVarListClause(
   case OMPC_schedule:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:

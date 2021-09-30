@@ -11778,8 +11778,11 @@ OMPClause *OMPClauseReader::readClause() {
   case llvm::omp::OMPC_nowait:
     C = new (Context) OMPNowaitClause();
     break;
-  case llvm::omp::OMPC_apollo:
-    C = new (Context) OMPApolloClause();
+  case llvm::omp::OMPC_apollo_features:
+    C = OMPApolloFeaturesClause::CreateEmpty(Context, Record.readInt());
+    break;
+  case llvm::omp::OMPC_apollo_num_threads:
+    C = OMPApolloNumThreadsClause::CreateEmpty(Context, Record.readInt());
     break;
   case llvm::omp::OMPC_untied:
     C = new (Context) OMPUntiedClause();
@@ -12105,7 +12108,25 @@ void OMPClauseReader::VisitOMPDetachClause(OMPDetachClause *C) {
 
 void OMPClauseReader::VisitOMPNowaitClause(OMPNowaitClause *) {}
 
-void OMPClauseReader::VisitOMPApolloClause(OMPApolloClause *) {}
+void OMPClauseReader::VisitOMPApolloFeaturesClause(OMPApolloFeaturesClause *C) {
+  C->setLParenLoc(Record.readSourceLocation());
+  unsigned NumVars = C->varlist_size();
+  SmallVector<Expr *, 16> Vars;
+  Vars.reserve(NumVars);
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Record.readSubExpr());
+  C->setVarRefs(Vars);
+}
+
+void OMPClauseReader::VisitOMPApolloNumThreadsClause(OMPApolloNumThreadsClause *C) {
+  C->setLParenLoc(Record.readSourceLocation());
+  unsigned NumVars = C->varlist_size();
+  SmallVector<Expr *, 16> Vars;
+  Vars.reserve(NumVars);
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Record.readSubExpr());
+  C->setVarRefs(Vars);
+}
 
 void OMPClauseReader::VisitOMPUntiedClause(OMPUntiedClause *) {}
 

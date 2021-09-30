@@ -2601,7 +2601,6 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
     Clause = ParseOpenMPSingleExprWithArgClause(DKind, CKind, WrongDirective);
     break;
   case OMPC_nowait:
-  case OMPC_apollo:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_read:
@@ -2669,6 +2668,8 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
   case OMPC_inclusive:
   case OMPC_exclusive:
   case OMPC_affinity:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
     Clause = ParseOpenMPVarListClause(DKind, CKind, WrongDirective);
     break;
   case OMPC_uses_allocators:

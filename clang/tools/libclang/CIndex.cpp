@@ -2232,7 +2232,9 @@ void OMPClauseEnqueue::VisitOMPDetachClause(const OMPDetachClause *C) {
 
 void OMPClauseEnqueue::VisitOMPNowaitClause(const OMPNowaitClause *) {}
 
-void OMPClauseEnqueue::VisitOMPApolloClause(const OMPApolloClause *) {}
+void OMPClauseEnqueue::VisitOMPApolloFeaturesClause(const OMPApolloFeaturesClause *) {}
+
+void OMPClauseEnqueue::VisitOMPApolloNumThreadsClause(const OMPApolloNumThreadsClause *) {}
 
 void OMPClauseEnqueue::VisitOMPUntiedClause(const OMPUntiedClause *) {}
 

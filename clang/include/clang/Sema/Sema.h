@@ -10642,8 +10642,15 @@ public:
   OMPClause *ActOnOpenMPNowaitClause(SourceLocation StartLoc,
                                      SourceLocation EndLoc);
   /// Called on well-formed 'apollo' clause.
-  OMPClause *ActOnOpenMPApolloClause(SourceLocation StartLoc,
+  OMPClause *ActOnOpenMPApolloFeaturesClause(ArrayRef<Expr *> VarList,
+                                     SourceLocation StartLoc,
+                                     SourceLocation LParenLoc,
                                      SourceLocation EndLoc);
+  /// Called on well-formed 'apollo_num_threads' clause.
+  OMPClause *ActOnOpenMPApolloNumThreadsClause(ArrayRef<Expr *> VarList,
+                                               SourceLocation StartLoc,
+                                               SourceLocation LParenLoc,
+                                               SourceLocation EndLoc);
   /// Called on well-formed 'untied' clause.
   OMPClause *ActOnOpenMPUntiedClause(SourceLocation StartLoc,
                                      SourceLocation EndLoc);

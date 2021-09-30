@@ -3082,7 +3082,12 @@ bool RecursiveASTVisitor<Derived>::VisitOMPNowaitClause(OMPNowaitClause *) {
 }
 
 template <typename Derived>
-bool RecursiveASTVisitor<Derived>::VisitOMPApolloClause(OMPApolloClause *) {
+bool RecursiveASTVisitor<Derived>::VisitOMPApolloFeaturesClause(OMPApolloFeaturesClause *) {
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPApolloNumThreadsClause(OMPApolloNumThreadsClause *) {
   return true;
 }
 

@@ -1572,31 +1572,65 @@ public:
   }
 };
 
-/// This represents 'apollo' clause in the '#pragma omp ...' directive.
+/// This represents 'apollo' clause in the '#pragma omp parallel' directive.
 ///
 /// \code
 /// #pragma omp parallel apollo
 /// \endcode
-/// In this example directive '#pragma omp parallel ' has 'nowait' clause.
-class OMPApolloClause : public OMPClause {
-public:
-  /// Build 'nowait' clause.
+/// In this example directive '#pragma omp parallel ' has 'apollo' clause.
+class OMPApolloFeaturesClause final
+    : public OMPVarListClause<OMPApolloFeaturesClause>,
+      private llvm::TrailingObjects<OMPApolloFeaturesClause, Expr *> {
+friend class OMPClauseReader;
+friend OMPVarListClause;
+friend TrailingObjects;
+
+private:
+  /// Build 'apollo' clause.
   ///
   /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
   /// \param EndLoc Ending location of the clause.
-  OMPApolloClause(SourceLocation StartLoc, SourceLocation EndLoc)
-      : OMPClause(llvm::omp::OMPC_apollo, StartLoc, EndLoc) {}
+  /// \param N Number of the variables in the clause.
+  OMPApolloFeaturesClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                  SourceLocation EndLoc, unsigned N)
+      : OMPVarListClause<OMPApolloFeaturesClause>(llvm::omp::OMPC_apollo_features, StartLoc,
+                                          LParenLoc, EndLoc, N) {}
 
   /// Build an empty clause.
-  OMPApolloClause()
-      : OMPClause(llvm::omp::OMPC_apollo, SourceLocation(), SourceLocation()) {}
+  ///
+  /// \param N Number of variables.
+  explicit OMPApolloFeaturesClause(unsigned N)
+      : OMPVarListClause<OMPApolloFeaturesClause>(llvm::omp::OMPC_apollo_features,
+                                          SourceLocation(), SourceLocation(),
+                                          SourceLocation(), N) {}
+
+public:
+/// Creates clause with a list of variables \a VL.
+  ///
+  /// \param C AST context.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL List of references to the variables.
+  static OMPApolloFeaturesClause *Create(const ASTContext &C, SourceLocation StartLoc,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation EndLoc, ArrayRef<Expr *> VL);
+
+  /// Creates an empty clause with \a N variables.
+  ///
+  /// \param C AST context.
+  /// \param N The number of variables.
+  static OMPApolloFeaturesClause *CreateEmpty(const ASTContext &C, unsigned N);
 
   child_range children() {
-    return child_range(child_iterator(), child_iterator());
+    return child_range(reinterpret_cast<Stmt **>(varlist_begin()),
+                       reinterpret_cast<Stmt **>(varlist_end()));
   }
 
   const_child_range children() const {
-    return const_child_range(const_child_iterator(), const_child_iterator());
+    auto Children = const_cast<OMPApolloFeaturesClause *>(this)->children();
+    return const_child_range(Children.begin(), Children.end());
   }
 
   child_range used_children() {
@@ -1607,9 +1641,85 @@ public:
   }
 
   static bool classof(const OMPClause *T) {
-    return T->getClauseKind() == llvm::omp::OMPC_apollo;
+    return T->getClauseKind() == llvm::omp::OMPC_apollo_features;
   }
 };
+
+/// This represents 'apollo_num_threads' clause in the '#pragma omp parallel' directive.
+///
+/// \code
+/// #pragma omp parallel apollo_num_threads(8, 16)
+/// \endcode
+/// In this example directive '#pragma omp parallel ' has 'apollo_num_threads' clause with
+/// number of thread selections of 8 or 16 threads.
+class OMPApolloNumThreadsClause final
+    : public OMPVarListClause<OMPApolloNumThreadsClause>,
+      private llvm::TrailingObjects<OMPApolloNumThreadsClause, Expr *> {
+friend class OMPClauseReader;
+friend OMPVarListClause;
+friend TrailingObjects;
+
+private:
+  /// Build 'apollo_num_threads' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param N Number of the variables in the clause.
+  OMPApolloNumThreadsClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                            SourceLocation EndLoc, unsigned N)
+      : OMPVarListClause<OMPApolloNumThreadsClause>(
+            llvm::omp::OMPC_apollo_num_threads, StartLoc, LParenLoc, EndLoc,
+            N) {}
+
+  /// Build an empty clause.
+  ///
+  /// \param N Number of variables.
+  explicit OMPApolloNumThreadsClause(unsigned N)
+      : OMPVarListClause<OMPApolloNumThreadsClause>(llvm::omp::OMPC_apollo_num_threads,
+                                          SourceLocation(), SourceLocation(),
+                                          SourceLocation(), N) {}
+
+public:
+/// Creates clause with a list of variables \a VL.
+  ///
+  /// \param C AST context.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL List of references to the variables.
+  static OMPApolloNumThreadsClause *Create(const ASTContext &C, SourceLocation StartLoc,
+                                 SourceLocation LParenLoc,
+                                 SourceLocation EndLoc, ArrayRef<Expr *> VL);
+
+  /// Creates an empty clause with \a N variables.
+  ///
+  /// \param C AST context.
+  /// \param N The number of variables.
+  static OMPApolloNumThreadsClause *CreateEmpty(const ASTContext &C, unsigned N);
+
+  child_range children() {
+    return child_range(reinterpret_cast<Stmt **>(varlist_begin()),
+                       reinterpret_cast<Stmt **>(varlist_end()));
+  }
+
+  const_child_range children() const {
+    auto Children = const_cast<OMPApolloNumThreadsClause *>(this)->children();
+    return const_child_range(Children.begin(), Children.end());
+  }
+
+  child_range used_children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+  const_child_range used_children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == llvm::omp::OMPC_apollo_num_threads;
+  }
+};
+
 /// This represents 'nowait' clause in the '#pragma omp ...' directive.
 ///
 /// \code

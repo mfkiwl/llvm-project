@@ -112,7 +112,8 @@ const OMPClauseWithPreInit *OMPClauseWithPreInit::get(const OMPClause *C) {
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -201,7 +202,8 @@ const OMPClauseWithPostUpdate *OMPClauseWithPostUpdate::get(const OMPClause *C) 
   case OMPC_copyprivate:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_mergeable:
   case OMPC_threadprivate:
@@ -511,6 +513,40 @@ OMPSharedClause *OMPSharedClause::Create(const ASTContext &C,
 OMPSharedClause *OMPSharedClause::CreateEmpty(const ASTContext &C, unsigned N) {
   void *Mem = C.Allocate(totalSizeToAlloc<Expr *>(N));
   return new (Mem) OMPSharedClause(N);
+}
+
+OMPApolloFeaturesClause *OMPApolloFeaturesClause::Create(const ASTContext &C,
+                                         SourceLocation StartLoc,
+                                         SourceLocation LParenLoc,
+                                         SourceLocation EndLoc,
+                                         ArrayRef<Expr *> VL) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Expr *>(VL.size()));
+  OMPApolloFeaturesClause *Clause =
+      new (Mem) OMPApolloFeaturesClause(StartLoc, LParenLoc, EndLoc, VL.size());
+  Clause->setVarRefs(VL);
+  return Clause;
+}
+
+OMPApolloFeaturesClause *OMPApolloFeaturesClause::CreateEmpty(const ASTContext &C, unsigned N) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Expr *>(N));
+  return new (Mem) OMPApolloFeaturesClause(N);
+}
+
+OMPApolloNumThreadsClause *OMPApolloNumThreadsClause::Create(const ASTContext &C,
+                                         SourceLocation StartLoc,
+                                         SourceLocation LParenLoc,
+                                         SourceLocation EndLoc,
+                                         ArrayRef<Expr *> VL) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Expr *>(VL.size()));
+  OMPApolloNumThreadsClause *Clause =
+      new (Mem) OMPApolloNumThreadsClause(StartLoc, LParenLoc, EndLoc, VL.size());
+  Clause->setVarRefs(VL);
+  return Clause;
+}
+
+OMPApolloNumThreadsClause *OMPApolloNumThreadsClause::CreateEmpty(const ASTContext &C, unsigned N) {
+  void *Mem = C.Allocate(totalSizeToAlloc<Expr *>(N));
+  return new (Mem) OMPApolloNumThreadsClause(N);
 }
 
 void OMPLinearClause::setPrivates(ArrayRef<Expr *> PL) {
@@ -1617,8 +1653,12 @@ void OMPClausePrinter::VisitOMPNowaitClause(OMPNowaitClause *) {
   OS << "nowait";
 }
 
-void OMPClausePrinter::VisitOMPApolloClause(OMPApolloClause *) {
-  OS << "apollo";
+void OMPClausePrinter::VisitOMPApolloFeaturesClause(OMPApolloFeaturesClause *) {
+  OS << "apollo_features";
+}
+
+void OMPClausePrinter::VisitOMPApolloNumThreadsClause(OMPApolloNumThreadsClause *) {
+  OS << "apollo_num_threads";
 }
 
 void OMPClausePrinter::VisitOMPUntiedClause(OMPUntiedClause *) {

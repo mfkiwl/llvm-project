@@ -6230,7 +6230,19 @@ void OMPClauseWriter::VisitOMPOrderedClause(OMPOrderedClause *C) {
 
 void OMPClauseWriter::VisitOMPNowaitClause(OMPNowaitClause *) {}
 
-void OMPClauseWriter::VisitOMPApolloClause(OMPApolloClause *) {}
+void OMPClauseWriter::VisitOMPApolloFeaturesClause(OMPApolloFeaturesClause *C) {
+  Record.push_back(C->varlist_size());
+  Record.AddSourceLocation(C->getLParenLoc());
+  for (auto *VE : C->varlists())
+    Record.AddStmt(VE);
+}
+
+void OMPClauseWriter::VisitOMPApolloNumThreadsClause(OMPApolloNumThreadsClause *C) {
+  Record.push_back(C->varlist_size());
+  Record.AddSourceLocation(C->getLParenLoc());
+  for (auto *VE : C->varlists())
+    Record.AddStmt(VE);
+}
 
 void OMPClauseWriter::VisitOMPUntiedClause(OMPUntiedClause *) {}
 

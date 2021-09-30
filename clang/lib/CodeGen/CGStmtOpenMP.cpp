@@ -1551,8 +1551,32 @@ static void emitCommonOMPParallelDirective(
   }
 
   bool EnableApollo = false;
-  if (S.getSingleClause<OMPApolloClause>())
+  SmallVector<llvm::Value *, 4> ApolloFeatureVars;
+  SmallVector<llvm::Value *, 4> ApolloNumThreadsList;
+  llvm::dbgs() << "=== Apollo clause\n";
+  if (const auto *C = S.getSingleClause<OMPApolloFeaturesClause>()) {
     EnableApollo = true;
+    for (auto *VE : C->varlists()) {
+      llvm::dbgs() << "=== Expr\n";
+      VE->dump();
+      llvm::dbgs() << "=== End of Expr\n";
+
+      llvm::Value *V = CGF.EmitLoadOfScalar(CGF.EmitLValue(VE), VE->getBeginLoc());
+      ApolloFeatureVars.push_back(V);
+    }
+  }
+  if (const auto *C = S.getSingleClause<OMPApolloNumThreadsClause>()) {
+    for (auto *E : C->varlists()) {
+      llvm::dbgs() << "=== NumThreads Expr\n";
+      E->dump();
+      llvm::dbgs() << "=== End of NumThreads Expr\n";
+
+      llvm::Value *V = CGF.EmitScalarExpr(E, /*IgnoreResultAssign=*/true);
+      ApolloNumThreadsList.push_back(V);
+    }
+  }
+
+  llvm::dbgs() << "=== End of Apollo clause\n";
 
   OMPParallelScope Scope(CGF, S);
   llvm::SmallVector<llvm::Value *, 16> CapturedVars;
@@ -1563,7 +1587,8 @@ static void emitCommonOMPParallelDirective(
   CodeGenBoundParameters(CGF, S, CapturedVars);
   CGF.GenerateOpenMPCapturedVars(*CS, CapturedVars);
   CGF.CGM.getOpenMPRuntime().emitParallelCall(CGF, S.getBeginLoc(), OutlinedFn,
-                                              CapturedVars, IfCond, EnableApollo);
+                                              CapturedVars, IfCond,
+                                              EnableApollo, ApolloFeatureVars, ApolloNumThreadsList);
 }
 
 static void emitEmptyBoundParameters(CodeGenFunction &,
@@ -5270,7 +5295,8 @@ static void emitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,
   case OMPC_schedule:
   case OMPC_ordered:
   case OMPC_nowait:
-  case OMPC_apollo:
+  case OMPC_apollo_features:
+  case OMPC_apollo_num_threads:
   case OMPC_untied:
   case OMPC_threadprivate:
   case OMPC_depend:
