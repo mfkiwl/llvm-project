@@ -63,11 +63,11 @@ define weak void @kernel2() #0 {
 ; CHECK-NEXT:    ret void
 ; CHECK:       user_code.entry:
 ; CHECK-NEXT:    [[TMP0:%.*]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* null) #[[ATTR1]]
-; CHECK-NEXT:    [[TMP1:%.*]] = bitcast [0 x i8*]* [[CAPTURED_VARS_ADDRS]] to i8**
+; CHECK-NEXT:    [[TMP1:%.*]] = bitcast [0 x i8*]* [[CAPTURED_VARS_ADDRS]] to i8*
 ; CHECK-NEXT:    call void @helper0() #[[ATTR1]]
 ; CHECK-NEXT:    call void @helper1() #[[ATTR1]]
 ; CHECK-NEXT:    call void @helper2() #[[ATTR1]]
-; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* null, i32 [[TMP0]], i32 1, i32 -1, i32 -1, i8* bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* bitcast (void (i16, i32)* @__omp_outlined___wrapper to i8*), i8** [[TMP1]], i64 0)
+; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* null, i32 [[TMP0]], i32 1, i32 -1, i32 -1, i8* bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* bitcast (void (i16, i32)* @__omp_outlined___wrapper to i8*), i8* [[TMP1]])
 ; CHECK-NEXT:    call void @__kmpc_target_deinit(%struct.ident_t* null, i8 2, i1 false)
 ; CHECK-NEXT:    ret void
 ;
@@ -82,11 +82,11 @@ common.ret:
 
 user_code.entry:
   %0 = call i32 @__kmpc_global_thread_num(%struct.ident_t* null)
-  %1 = bitcast [0 x i8*]* %captured_vars_addrs to i8**
+  %1 = bitcast [0 x i8*]* %captured_vars_addrs to i8*
   call void @helper0()
   call void @helper1()
   call void @helper2()
-  call void @__kmpc_parallel_51(%struct.ident_t* null, i32 %0, i32 1, i32 -1, i32 -1, i8* bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* bitcast (void (i16, i32)* @__omp_outlined___wrapper to i8*), i8** %1, i64 0)
+  call void @__kmpc_parallel_51(%struct.ident_t* null, i32 %0, i32 1, i32 -1, i32 -1, i8* bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* bitcast (void (i16, i32)* @__omp_outlined___wrapper to i8*), i8* %1)
   call void @__kmpc_target_deinit(%struct.ident_t* null, i8 1, i1 true)
   ret void
 }
@@ -181,7 +181,7 @@ entry:
 declare i32 @__kmpc_get_hardware_num_threads_in_block()
 declare i32 @__kmpc_target_init(%struct.ident_t*, i8, i1 zeroext, i1 zeroext) #1
 declare void @__kmpc_target_deinit(%struct.ident_t* nocapture readnone, i8, i1 zeroext) #1
-declare void @__kmpc_parallel_51(%struct.ident_t*, i32, i32, i32, i32, i8*, i8*, i8**, i64)
+declare void @__kmpc_parallel_51(%struct.ident_t*, i32, i32, i32, i32, i8*, i8*, i8*)
 declare i32 @__kmpc_global_thread_num(%struct.ident_t*)
 
 

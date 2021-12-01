@@ -157,32 +157,32 @@ int main()
 // CHECK: {{%.+}} = call{{.+}} @__tgt_target_teams_mapper(%struct.ident_t* @{{.+}}, {{.+}}, {{.+}}, {{.+}}, i8** [[BASES_GEP]], i8** [[PTRS_GEP]], i[[PTRSZ]]* getelementptr inbounds ([5 x i{{.+}}], [5 x i{{.+}}]* [[SIZES_TEMPLATE]], i{{.+}} 0, i{{.+}} 0), i64* getelementptr inbounds ([5 x i64], [5 x i64]* [[TYPES_TEMPLATE]], i{{.+}} 0, i{{.+}} 0), i8** null, i8** null, {{.+}}, {{.+}})
 
 // CHECK: define internal void @{{.+}}omp_loop_ref{{.+}}(
-// CHECK: [[BODY:%body.addr]] = alloca %class.anon*
-// CHECK: [[TMP:%tmp]] = alloca %class.anon*
-// CHECK: [[BODY_REF:%body_ref]] = alloca %class.anon.1*
-// CHECK: [[REF_TMP:%ref.tmp]] = alloca %class.anon.1
-// CHECK: [[TMP8:%tmp.+]] = alloca %class.anon.1*
-// CHECK: [[L0:%.+]] = load %class.anon*, %class.anon** [[BODY]]
-// CHECK: store %class.anon* [[L0]], %class.anon** [[TMP]]
-// CHECK: [[L5:%.+]] = load %class.anon*, %class.anon** [[TMP]]
-// CHECK-NOT [[L6:%.+]] = load %class.anon*, %class.anon** [[TMP]]
-// CHECK-NOT [[L7:%.+]] = load %class.anon*, %class.anon** [[TMP]]
-// CHECK: store %class.anon.1* [[REF_TMP]], %class.anon.1** [[BODY_REF]]
-// CHECK:[[L47:%.+]] =  load %class.anon.1*, %class.anon.1** [[BODY_REF]]
-// CHECK: store %class.anon.1* [[L47]], %class.anon.1** [[TMP8]]
-// CHECK: [[L48:%.+]] = load %class.anon.1*, %class.anon.1** [[TMP8]]
-// CHECK-NOT: [[L49:%.+]] = load %class.anon.1*, %class.anon.1** [[TMP8]]
-// CHECK-NOT: [[L50:%.+]] = load %class.anon.1*, %class.anon.1** [[TMP8]]
+// CHECK: [[BODY:%body.addr]] = alloca [[CLASS_ANON:%.*]]*
+// CHECK: [[TMP:%tmp]] = alloca [[CLASS_ANON:%.*]]*
+// CHECK: [[BODY_REF:%body_ref]] = alloca [[CLASS_ANON_1:%.*]]*
+// CHECK: [[REF_TMP:%ref.tmp]] = alloca [[CLASS_ANON_1:%.*]]
+// CHECK: [[TMP8:%tmp.+]] = alloca [[CLASS_ANON_1:%.*]]*
+// CHECK: [[L0:%.+]] = load [[CLASS_ANON:%.*]]*, [[CLASS_ANON:%.*]]** [[BODY]]
+// CHECK: store [[CLASS_ANON:%.*]]* [[L0]], [[CLASS_ANON:%.*]]** [[TMP]]
+// CHECK: [[L5:%.+]] = load [[CLASS_ANON:%.*]]*, [[CLASS_ANON:%.*]]** [[TMP]]
+// CHECK-NOT [[L6:%.+]] = load [[CLASS_ANON:%.*]]*, [[CLASS_ANON:%.*]]** [[TMP]]
+// CHECK-NOT [[L7:%.+]] = load [[CLASS_ANON:%.*]]*, [[CLASS_ANON:%.*]]** [[TMP]]
+// CHECK: store [[CLASS_ANON_1:%.*]]* [[REF_TMP]], [[CLASS_ANON_1:%.*]]** [[BODY_REF]]
+// CHECK:[[L47:%.+]] =  load [[CLASS_ANON_1:%.*]]*, [[CLASS_ANON_1:%.*]]** [[BODY_REF]]
+// CHECK: store [[CLASS_ANON_1:%.*]]* [[L47]], [[CLASS_ANON_1:%.*]]** [[TMP8]]
+// CHECK: [[L48:%.+]] = load [[CLASS_ANON_1:%.*]]*, [[CLASS_ANON_1:%.*]]** [[TMP8]]
+// CHECK-NOT: [[L49:%.+]] = load [[CLASS_ANON_1:%.*]]*, [[CLASS_ANON_1:%.*]]** [[TMP8]]
+// CHECK-NOT: [[L50:%.+]] = load [[CLASS_ANON_1:%.*]]*, [[CLASS_ANON_1:%.*]]** [[TMP8]]
 // CHECK: ret void
 
 // CHECK: define internal void @{{.+}}xoo{{.+}}(
-// CHECK: [[FADDR:%f.addr]] = alloca %class.anon.0*
-// CHECK: [[L0:%.+]] = load %class.anon.0*, %class.anon.0** [[FADDR]]
-// CHECK: store %class.anon.0* [[L0]], %class.anon.0** [[TMP:%tmp]]
-// CHECK: [[L1:%.+]] = load %class.anon.0*, %class.anon.0** [[TMP]]
-// CHECK-NOT: %4 = load %class.anon.0*, %class.anon.0** [[TMP]]
-// CHECK-NOT: %5 = load %class.anon.0*, %class.anon.0** [[TMP]]
-// CHECK: [[L4:%.+]] = getelementptr inbounds %class.anon.0, %class.anon.0* [[L1]], i32 0, i32 0
+// CHECK: [[FADDR:%f.addr]] = alloca [[CLASS_ANON_0:%.*]]*
+// CHECK: [[L0:%.+]] = load [[CLASS_ANON_0:%.*]]*, [[CLASS_ANON_0:%.*]]** [[FADDR]]
+// CHECK: store [[CLASS_ANON_0:%.*]]* [[L0]], [[CLASS_ANON_0:%.*]]** [[TMP:%tmp]]
+// CHECK: [[L1:%.+]] = load [[CLASS_ANON_0:%.*]]*, [[CLASS_ANON_0:%.*]]** [[TMP]]
+// CHECK-NOT: %4 = load [[CLASS_ANON_0:%.*]]*, [[CLASS_ANON_0:%.*]]** [[TMP]]
+// CHECK-NOT: %5 = load [[CLASS_ANON_0:%.*]]*, [[CLASS_ANON_0:%.*]]** [[TMP]]
+// CHECK: [[L4:%.+]] = getelementptr inbounds [[CLASS_ANON_0:%.*]], [[CLASS_ANON_0:%.*]]* [[L1]], i32 0, i32 0
 // CHECK: [[L5:%.+]] = load i{{.*}}*, i{{.*}}** [[L4]]
 // CHECK: ret void
 

@@ -9,12 +9,16 @@ void baz(void) __attribute__((assume("omp_no_openmp")));
 void bar1(void) {
 #pragma omp parallel // #0
                      // safe-remark@#0 {{Parallel region is used in unknown ways. Will not attempt to rewrite the state machine. [OMP101]}}
+                     // safe-remark@#0 3 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // safe-remark@#0 2 {{Moving globalized variable to the stack. [OMP110]}}
   {
   }
 }
 void bar2(void) {
 #pragma omp parallel // #1
                      // safe-remark@#1 {{Parallel region is used in unknown ways. Will not attempt to rewrite the state machine. [OMP101]}}
+                     // safe-remark@#1 2 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // safe-remark@#1 2 {{Moving globalized variable to the stack. [OMP110]}}
   {
   }
 }
@@ -26,10 +30,14 @@ void foo1(void) {
   {
     baz();           // all-remark {{Value has potential side effects preventing SPMD-mode execution. Add `__attribute__((assume("ompx_spmd_amenable")))` to the called function to override. [OMP121]}}
 #pragma omp parallel // #3
+                     // all-remark@#3 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#3 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar1();
 #pragma omp parallel // #4
+                     // all-remark@#4 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#4 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
   }
@@ -41,11 +49,15 @@ void foo2(void) {
   {
     baz();           // all-remark {{Value has potential side effects preventing SPMD-mode execution. Add `__attribute__((assume("ompx_spmd_amenable")))` to the called function to override. [OMP121]}}
 #pragma omp parallel // #6
+                     // all-remark@#6 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#6 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar1();
     bar2();
 #pragma omp parallel // #7
+                     // all-remark@#7 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#7 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar1();
@@ -59,11 +71,15 @@ void foo3(void) {
   {
     baz();           // all-remark {{Value has potential side effects preventing SPMD-mode execution. Add `__attribute__((assume("ompx_spmd_amenable")))` to the called function to override. [OMP121]}}
 #pragma omp parallel // #9
+                     // all-remark@#9 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#9 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar1();
     bar2();
 #pragma omp parallel // #10
+                     // all-remark@#10 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // all-remark@#10 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar1();
@@ -74,11 +90,13 @@ void foo3(void) {
 void spmd(void) {
   // Verify we do not emit the remarks above for "SPMD" regions.
 #pragma omp target teams
-#pragma omp parallel
+#pragma omp parallel // #11
+                     // all-remark@#11 {{Moving globalized variable to the stack. [OMP110]}}
   {
   }
 
-#pragma omp target teams distribute parallel for
+#pragma omp target teams distribute parallel for // #12
+                                                 // all-remark@#12 {{Moving globalized variable to the stack. [OMP110]}}
   for (int i = 0; i < 100; ++i) {
   }
 }

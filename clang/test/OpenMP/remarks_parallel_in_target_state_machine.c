@@ -9,6 +9,8 @@ void baz(void) __attribute__((assume("omp_no_openmp")));
 void bar(void) {
 #pragma omp parallel // #1                                                                                                                                                                                                                                                                                                                                           \
                      // expected-remark@#1 {{Parallel region is used in unknown ways. Will not attempt to rewrite the state machine. [OMP101]}}
+                     // expected-remark@#1 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // expected-remark@#1 2 {{Moving globalized variable to the stack. [OMP110]}}
   {
   }
 }
@@ -18,11 +20,15 @@ void foo(void) {
                          // expected-remark@#2 {{Rewriting generic-mode kernel with a customized state machine. [OMP131]}}
   {
     baz();               // expected-remark {{Value has potential side effects preventing SPMD-mode execution. Add `__attribute__((assume("ompx_spmd_amenable")))` to the called function to override. [OMP121]}}
-#pragma omp parallel
+#pragma omp parallel // #3
+                     // expected-remark@#3 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // expected-remark@#3 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
     bar();
-#pragma omp parallel
+#pragma omp parallel // #4
+                     // expected-remark@#4 {{Value has potential side effects preventing SPMD-mode execution. [OMP121]}}
+                     // expected-remark@#4 {{Moving globalized variable to the stack. [OMP110]}}
     {
     }
   }
@@ -31,11 +37,13 @@ void foo(void) {
 void spmd(void) {
   // Verify we do not emit the remarks above for "SPMD" regions.
 #pragma omp target teams
-#pragma omp parallel
+#pragma omp parallel // #5
+                     // expected-remark@#5 {{Moving globalized variable to the stack. [OMP110]}}
   {
   }
 
-#pragma omp target teams distribute parallel for
+#pragma omp target teams distribute parallel for // #6
+                                                 // expected-remark@#6 {{Moving globalized variable to the stack. [OMP110]}}
   for (int i = 0; i < 100; ++i) {
   }
 }

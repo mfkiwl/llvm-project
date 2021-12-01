@@ -47,7 +47,6 @@ target triple = "nvptx64"
 ; CHECK: @[[GLOB2:[0-9]+]] = private unnamed_addr constant [[STRUCT_IDENT_T:%.*]] { i32 0, i32 2, i32 2, i32 0, i8* getelementptr inbounds ([23 x i8], [23 x i8]* @[[GLOB0]], i32 0, i32 0) }, align 8
 ; CHECK: @[[G:[a-zA-Z0-9_$"\\.-]+]] = external global i32, align 4
 ; CHECK: @[[LLVM_COMPILER_USED:[a-zA-Z0-9_$"\\.-]+]] = appending global [2 x i8*] [i8* @__omp_offloading_2b_10393b5_spmd_l12_exec_mode, i8* @__omp_offloading_2b_10393b5_generic_l20_exec_mode], section "llvm.metadata"
-; CHECK: @[[__OMP_OUTLINED___WRAPPER_ID:[a-zA-Z0-9_$"\\.-]+]] = private constant i8 undef
 ;.
 define weak void @__omp_offloading_2b_10393b5_spmd_l12() #0 {
 ; CHECK-LABEL: define {{[^@]+}}@__omp_offloading_2b_10393b5_spmd_l12
@@ -73,14 +72,10 @@ define weak void @__omp_offloading_2b_10393b5_spmd_l12() #0 {
 ; CHECK:       worker_state_machine.finished:
 ; CHECK-NEXT:    ret void
 ; CHECK:       worker_state_machine.is_active.check:
-; CHECK-NEXT:    br i1 [[WORKER_IS_ACTIVE]], label [[WORKER_STATE_MACHINE_PARALLEL_REGION_CHECK:%.*]], label [[WORKER_STATE_MACHINE_DONE_BARRIER:%.*]]
-; CHECK:       worker_state_machine.parallel_region.check:
-; CHECK-NEXT:    br i1 true, label [[WORKER_STATE_MACHINE_PARALLEL_REGION_EXECUTE:%.*]], label [[WORKER_STATE_MACHINE_PARALLEL_REGION_CHECK1:%.*]]
-; CHECK:       worker_state_machine.parallel_region.execute:
-; CHECK-NEXT:    call void @__omp_outlined___wrapper(i16 0, i32 [[TMP0]])
+; CHECK-NEXT:    br i1 [[WORKER_IS_ACTIVE]], label [[WORKER_STATE_MACHINE_PARALLEL_REGION_FALLBACK_EXECUTE:%.*]], label [[WORKER_STATE_MACHINE_DONE_BARRIER:%.*]]
+; CHECK:       worker_state_machine.parallel_region.fallback.execute:
+; CHECK-NEXT:    call void [[WORKER_WORK_FN_ADDR_CAST]](i16 0, i32 [[TMP0]])
 ; CHECK-NEXT:    br label [[WORKER_STATE_MACHINE_PARALLEL_REGION_END:%.*]]
-; CHECK:       worker_state_machine.parallel_region.check1:
-; CHECK-NEXT:    br label [[WORKER_STATE_MACHINE_PARALLEL_REGION_END]]
 ; CHECK:       worker_state_machine.parallel_region.end:
 ; CHECK-NEXT:    call void @__kmpc_kernel_end_parallel()
 ; CHECK-NEXT:    br label [[WORKER_STATE_MACHINE_DONE_BARRIER]]
@@ -153,7 +148,7 @@ define internal void @spmd_helper() #1 {
 ; CHECK-NEXT:    call void @leaf() #[[ATTR7:[0-9]+]]
 ; CHECK-NEXT:    [[TMP0:%.*]] = call i32 @__kmpc_global_thread_num(%struct.ident_t* noundef @[[GLOB2]]) #[[ATTR2:[0-9]+]]
 ; CHECK-NEXT:    [[TMP1:%.*]] = bitcast [0 x i8*]* [[CAPTURED_VARS_ADDRS]] to i8**
-; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* noundef @[[GLOB2]], i32 [[TMP0]], i32 noundef 1, i32 noundef -1, i32 noundef -1, i8* noundef bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* noundef @__omp_outlined___wrapper.ID, i8** noundef [[TMP1]], i64 noundef 0)
+; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* noundef @[[GLOB2]], i32 [[TMP0]], i32 noundef 1, i32 noundef -1, i32 noundef -1, i8* noundef bitcast (void (i32*, i32*)* @__omp_outlined__ to i8*), i8* noundef bitcast (void (i16, i32)* @__omp_outlined___wrapper to i8*), i8** noundef [[TMP1]], i64 noundef 0)
 ; CHECK-NEXT:    ret void
 ;
 entry:

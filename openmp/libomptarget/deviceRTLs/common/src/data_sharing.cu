@@ -92,6 +92,10 @@ EXTERN void __kmpc_free_shared(void *Ptr, size_t Bytes) {
   SafeFree(Ptr, "FreeGlobalFallback");
 }
 
+EXTERN void *__kmpc_alloc_aggregate_arg(void *LocalPtr, void *GlobalPtr) {
+  return (__kmpc_is_spmd_exec_mode() ? LocalPtr : GlobalPtr);
+}
+
 EXTERN void __kmpc_data_sharing_init_stack() {
   for (unsigned i = 0; i < MainSharedStack.NumWarps; ++i)
     MainSharedStack.Usage[i] = 0;
@@ -99,52 +103,24 @@ EXTERN void __kmpc_data_sharing_init_stack() {
     WorkerSharedStack.Usage[i] = 0;
 }
 
-/// Allocate storage in shared memory to communicate arguments from the main
-/// thread to the workers in generic mode. If we exceed
-/// NUM_SHARED_VARIABLES_IN_SHARED_MEM we will malloc space for communication.
-#define NUM_SHARED_VARIABLES_IN_SHARED_MEM 64
-
-[[clang::loader_uninitialized]] static void
-    *SharedMemVariableSharingSpace[NUM_SHARED_VARIABLES_IN_SHARED_MEM];
-#pragma omp allocate(SharedMemVariableSharingSpace)                            \
-    allocator(omp_pteam_mem_alloc)
-[[clang::loader_uninitialized]] static void **SharedMemVariableSharingSpacePtr;
-#pragma omp allocate(SharedMemVariableSharingSpacePtr)                         \
+/// Allocate storage in shared memory to communicate arguments, stored in the
+/// aggregating struct, from the main thread to the workers in generic mode.
+[[clang::loader_uninitialized]] static void *SharedMemAggregatePtr[1];
+#pragma omp allocate(SharedMemAggregatePtr) \
     allocator(omp_pteam_mem_alloc)
 
-// Begin a data sharing context. Maintain a list of references to shared
-// variables. This list of references to shared variables will be passed
-// to one or more threads.
-// In L0 data sharing this is called by master thread.
-// In L1 data sharing this is called by active warp master thread.
-EXTERN void __kmpc_begin_sharing_variables(void ***GlobalArgs, size_t nArgs) {
-  if (nArgs <= NUM_SHARED_VARIABLES_IN_SHARED_MEM) {
-    SharedMemVariableSharingSpacePtr = &SharedMemVariableSharingSpace[0];
-  } else {
-    SharedMemVariableSharingSpacePtr =
-        (void **)SafeMalloc(nArgs * sizeof(void *), "new extended args");
-  }
-  *GlobalArgs = SharedMemVariableSharingSpacePtr;
-}
-
-// End a data sharing context. There is no need to have a list of refs
-// to shared variables because the context in which those variables were
-// shared has now ended. This should clean-up the list of references only
-// without affecting the actual global storage of the variables.
-// In L0 data sharing this is called by master thread.
-// In L1 data sharing this is called by active warp master thread.
-EXTERN void __kmpc_end_sharing_variables() {
-  if (SharedMemVariableSharingSpacePtr != &SharedMemVariableSharingSpace[0])
-    SafeFree(SharedMemVariableSharingSpacePtr, "new extended args");
-}
-
-// This function will return a list of references to global variables. This
-// is how the workers will get a reference to the globalized variable. The
-// members of this list will be passed to the outlined parallel function
-// preserving the order.
+// This function will return the pointer to the struct that aggregates shared
+// variables to pass to the outlined parallel function.
 // Called by all workers.
-EXTERN void __kmpc_get_shared_variables(void ***GlobalArgs) {
-  *GlobalArgs = SharedMemVariableSharingSpacePtr;
+EXTERN void __kmpc_get_shared_variables_aggregate(void **GlobalArgs) {
+  *GlobalArgs = SharedMemAggregatePtr[0];
+}
+
+// This function sets the aggregate struct of shared variables for the team,
+// by storing the pointer of the aggregate, passed as an argument from the main
+// thread, to the shared memory storage.
+EXTERN void __kmpc_set_shared_variables_aggregate(void *args) {
+  SharedMemAggregatePtr[0] = args;
 }
 
 // This function is used to init static memory manager. This manager is used to

@@ -51,13 +51,13 @@ define weak void @parallel() {
 ; CHECK-LABEL: define {{[^@]+}}@parallel() {
 ; CHECK-NEXT:    [[I:%.*]] = call i32 @__kmpc_target_init(%struct.ident_t* align 4294967296 null, i8 2, i1 false, i1 false)
 ; CHECK-NEXT:    call void @spmd_helper()
-; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* noalias noundef align 4294967296 null, i32 noundef 0, i32 noundef 0, i32 noundef 0, i32 noundef 0, i8* noalias noundef align 4294967296 null, i8* noalias noundef align 4294967296 null, i8** noalias noundef align 4294967296 null, i64 noundef 0)
+; CHECK-NEXT:    call void @__kmpc_parallel_51(%struct.ident_t* noalias noundef align 4294967296 null, i32 noundef 0, i32 noundef 0, i32 noundef 0, i32 noundef 0, i8* noalias noundef align 4294967296 null, i8* noalias noundef align 4294967296 null, i8* noalias noundef align 4294967296 null)
 ; CHECK-NEXT:    call void @__kmpc_target_deinit(%struct.ident_t* null, i8 2, i1 false)
 ; CHECK-NEXT:    ret void
 ;
   %i = call i32 @__kmpc_target_init(%struct.ident_t* null, i8 2, i1 false, i1 false)
   call void @spmd_helper()
-  call void @__kmpc_parallel_51(%struct.ident_t* null, i32 0, i32 0, i32 0, i32 0, i8* null, i8* null, i8** null, i64 0)
+  call void @__kmpc_parallel_51(%struct.ident_t* null, i32 0, i32 0, i32 0, i32 0, i8* null, i8* null, i8* null)
   call void @__kmpc_target_deinit(%struct.ident_t* null, i8 2, i1 false)
   ret void
 }
@@ -106,9 +106,9 @@ define internal void @spmd_helper() {
   ret void
 }
 
-define internal void @__kmpc_parallel_51(%struct.ident_t*, i32, i32, i32, i32, i8*, i8*, i8**, i64) {
+define internal void @__kmpc_parallel_51(%struct.ident_t*, i32, i32, i32, i32, i8*, i8*, i8*) {
 ; CHECK-LABEL: define {{[^@]+}}@__kmpc_parallel_51
-; CHECK-SAME: (%struct.ident_t* noalias nocapture nofree readnone align 4294967296 [[TMP0:%.*]], i32 [[TMP1:%.*]], i32 [[TMP2:%.*]], i32 [[TMP3:%.*]], i32 [[TMP4:%.*]], i8* noalias nocapture nofree readnone align 4294967296 [[TMP5:%.*]], i8* noalias nocapture nofree readnone align 4294967296 [[TMP6:%.*]], i8** noalias nocapture nofree readnone align 4294967296 [[TMP7:%.*]], i64 [[TMP8:%.*]]) #[[ATTR0:[0-9]+]] {
+; CHECK-SAME: (%struct.ident_t* noalias nocapture nofree readnone align 4294967296 [[TMP0:%.*]], i32 [[TMP1:%.*]], i32 [[TMP2:%.*]], i32 [[TMP3:%.*]], i32 [[TMP4:%.*]], i8* noalias nocapture nofree readnone align 4294967296 [[TMP5:%.*]], i8* noalias nocapture nofree readnone align 4294967296 [[TMP6:%.*]], i8* noalias nocapture nofree readnone align 4294967296 [[TMP7:%.*]]) #[[ATTR0:[0-9]+]] {
 ; CHECK-NEXT:    call void @parallel_helper()
 ; CHECK-NEXT:    ret void
 ;

@@ -217,13 +217,9 @@ char *GetTeamsReductionScratchpad() {
 // Invoke an outlined parallel function unwrapping arguments (up
 // to 32).
 void __kmp_invoke_microtask(kmp_int32 global_tid, kmp_int32 bound_tid, void *fn,
-                            void **args, size_t nargs) {
-  switch (nargs) {
-#include "common/generated_microtask_cases.gen"
-  default:
-    printf("Too many arguments in kmp_invoke_microtask, aborting execution.\n");
-    __builtin_trap();
-  }
+                            void *args) {
+  ((void (*)(kmp_int32 *, kmp_int32 *, void *))fn)(&global_tid, &bound_tid,
+                                                   args);
 }
 
 namespace _OMP {
