@@ -12994,6 +12994,12 @@ void OMPClauseReader::VisitOMPBindClause(OMPBindClause *C) {
   C->setBindKindLoc(Record.readSourceLocation());
 }
 
+void OMPClauseReader::VisitOMPWhenClause(OMPWhenClause *C) {
+  // TODO: check, not familiar with this.
+  C->setTraitInfo(Record.readOMPTraitInfo());
+  C->setDirective(Record.readStmt());
+}
+
 void OMPClauseReader::VisitOMPAlignClause(OMPAlignClause *C) {
   C->setAlignment(Record.readExpr());
   C->setLParenLoc(Record.readSourceLocation());

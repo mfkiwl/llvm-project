@@ -2488,12 +2488,12 @@ Parser::ParseOpenMPDeclarativeOrExecutableDirective(ParsedStmtContext StmtCtx) {
     // First iteration of parsing all clauses of metadirective.
     // This iteration only parses and collects all context selector ignoring the
     // associated directives.
-    TentativeParsingAction TPA(*this);
     ASTContext &ASTContext = Actions.getASTContext();
 
     BalancedDelimiterTracker T(*this, tok::l_paren,
                                tok::annot_pragma_openmp_end);
     while (Tok.isNot(tok::annot_pragma_openmp_end)) {
+      TentativeParsingAction TPA(*this);
       OpenMPClauseKind CKind = Tok.isAnnotation()
                                    ? OMPC_unknown
                                    : getOpenMPClauseKind(PP.getSpelling(Tok));
@@ -2505,122 +2505,102 @@ Parser::ParseOpenMPDeclarativeOrExecutableDirective(ParsedStmtContext StmtCtx) {
         return Directive;
 
       OMPTraitInfo &TI = Actions.getASTContext().getNewOMPTraitInfo();
-      if (CKind == OMPC_when) {
-        // parse and get OMPTraitInfo to pass to the When clause
-        parseOMPContextSelectors(Loc, TI);
-        if (TI.Sets.size() == 0) {
-          Diag(Tok, diag::err_omp_expected_context_selector) << "when clause";
-          TPA.Commit();
-          return Directive;
+      if (CKind == OMPC_when || CKind == OMPC_default) {
+        // If it is a "when" clause parse the context selectors for the trait
+        // info, a "default" clause will have empty trait info.
+        if (CKind == OMPC_when) {
+          // parse and get OMPTraitInfo to pass to the When clause
+          parseOMPContextSelectors(Loc, TI);
+          if (TI.Sets.size() == 0) {
+            Diag(Tok, diag::err_omp_expected_context_selector) << "when clause";
+            TPA.Commit();
+            return Directive;
+          }
+
+          // Parse ':'
+          if (Tok.is(tok::colon))
+            ConsumeAnyToken();
+          else {
+            Diag(Tok, diag::err_omp_expected_colon) << "when clause";
+            TPA.Commit();
+            return Directive;
+          }
+
+          VariantMatchInfo VMI;
+          TI.getAsVariantMatchInfo(ASTContext, VMI);
+          VMIs.push_back(VMI);
         }
 
-        // Parse ':'
-        if (Tok.is(tok::colon))
-          ConsumeAnyToken();
-        else {
-          Diag(Tok, diag::err_omp_expected_colon) << "when clause";
-          TPA.Commit();
-          return Directive;
-        }
-      }
-      // Skip Directive for now. We will parse directive in the second iteration
-      int paren = 0;
-      while (Tok.isNot(tok::r_paren) || paren != 0) {
-        if (Tok.is(tok::l_paren))
-          paren++;
-        if (Tok.is(tok::r_paren))
-          paren--;
-        if (Tok.is(tok::annot_pragma_openmp_end)) {
-          Diag(Tok, diag::err_omp_expected_punc)
-              << getOpenMPClauseName(CKind) << 0;
-          TPA.Commit();
-          return Directive;
-        }
-        ConsumeAnyToken();
-      }
-      // Parse ')'
-      if (Tok.is(tok::r_paren))
-        T.consumeClose();
+        // TODO: currently expects a directive, OpenMP 5.1 specifies nothing
+        // directive when there is none.
+        ReadDirectiveWithinMetadirective = true;
+        StmtResult WhenDirective =
+            ParseOpenMPDeclarativeOrExecutableDirective(StmtCtx);
+        ReadDirectiveWithinMetadirective = false;
+        if (OMPExecutableDirective *D =
+                dyn_cast<OMPExecutableDirective>(WhenDirective.get()))
+          if (D->hasAssociatedStmt())
+            HasAssociatedStatement = true;
 
-      VariantMatchInfo VMI;
-      TI.getAsVariantMatchInfo(ASTContext, VMI);
+        auto *WhenClause = Actions.ActOnOpenMPWhenClause(
+            TI, WhenDirective, Loc, T.getOpenLocation(), T.getCloseLocation());
+        Clauses.push_back(WhenClause);
 
-      VMIs.push_back(VMI);
-    }
+        // Revert back to the beginning of the clause.
+        TPA.Revert(/*RevertAnnotations*/ true);
 
-    TPA.Revert();
-    // End of the first iteration. Parser is reset to the start of metadirective
-
-    std::function<void(StringRef)> DiagUnknownTrait = [this, Loc](
-                                                          StringRef ISATrait) {
-      // TODO Track the selector locations in a way that is accessible here to
-      // improve the diagnostic location.
-      Diag(Loc, diag::warn_unknown_declare_variant_isa_trait) << ISATrait;
-    };
-    TargetOMPContext OMPCtx(ASTContext, std::move(DiagUnknownTrait),
-                            /* CurrentFunctionDecl */ nullptr,
-                            ArrayRef<llvm::omp::TraitProperty>());
-
-    // A single match is returned for OpenMP 5.0
-    int BestIdx = getBestVariantMatchForContext(VMIs, OMPCtx);
-
-    int Idx = 0;
-    // In OpenMP 5.0 metadirective is either replaced by another directive or
-    // ignored.
-    // TODO: In OpenMP 5.1 generate multiple directives based upon the matches
-    // found by getBestWhenMatchForContext.
-    while (Tok.isNot(tok::annot_pragma_openmp_end)) {
-      // OpenMP 5.0 implementation - Skip to the best index found.
-      if (Idx++ != BestIdx) {
+        // Skip until the end of this clause.
         ConsumeToken();  // Consume clause name
         T.consumeOpen(); // Consume '('
         int paren = 0;
-        // Skip everything inside the clause
         while (Tok.isNot(tok::r_paren) || paren != 0) {
           if (Tok.is(tok::l_paren))
             paren++;
           if (Tok.is(tok::r_paren))
             paren--;
+          if (Tok.is(tok::annot_pragma_openmp_end)) {
+            Diag(Tok, diag::err_omp_expected_punc)
+                << getOpenMPClauseName(CKind) << 0;
+            return Directive;
+          }
           ConsumeAnyToken();
         }
-        // Parse ')'
-        if (Tok.is(tok::r_paren))
-          T.consumeClose();
-        continue;
+
+        assert(Tok.is(tok::r_paren) &&
+               "Expected right paren ending the clause.");
+        T.consumeClose();
       }
-
-      OpenMPClauseKind CKind = Tok.isAnnotation()
-                                   ? OMPC_unknown
-                                   : getOpenMPClauseKind(PP.getSpelling(Tok));
-      SourceLocation Loc = ConsumeToken();
-
-      // Parse '('.
-      T.consumeOpen();
-
-      // Skip ContextSelectors for when clause
-      if (CKind == OMPC_when) {
-        OMPTraitInfo &TI = Actions.getASTContext().getNewOMPTraitInfo();
-        // parse and skip the ContextSelectors
-        parseOMPContextSelectors(Loc, TI);
-
-        // Parse ':'
-        ConsumeAnyToken();
-      }
-
-      // If no directive is passed, skip in OpenMP 5.0.
-      // TODO: Generate nothing directive from OpenMP 5.1.
-      if (Tok.is(tok::r_paren)) {
-        SkipUntil(tok::annot_pragma_openmp_end);
-        break;
-      }
-
-      // Parse Directive
-      ReadDirectiveWithinMetadirective = true;
-      Directive = ParseOpenMPDeclarativeOrExecutableDirective(StmtCtx);
-      ReadDirectiveWithinMetadirective = false;
-      break;
     }
-    break;
+
+    // Skip until the end of the metadirective.
+    SkipUntil(tok::annot_pragma_openmp_end);
+    // Skip any associated statement.
+    if (HasAssociatedStatement)
+      ParseStatement();
+
+    std::function<void(StringRef)> DiagUnknownTrait =
+        [this, Loc](StringRef ISATrait) {
+          // TODO Track the selector locations in a way that is accessible here
+          // to improve the diagnostic location.
+          Diag(Loc, diag::warn_unknown_declare_variant_isa_trait) << ISATrait;
+        };
+    TargetOMPContext OMPCtx(ASTContext, std::move(DiagUnknownTrait),
+                            /* CurrentFunctionDecl */ nullptr,
+                            ArrayRef<llvm::omp::TraitProperty>());
+
+    // Find applicable clauses.
+    SmallVector<OMPClause *, 5> ApplicableClauses;
+    for (OMPClause *C : Clauses) {
+      OMPTraitInfo &TI = cast<OMPWhenClause>(C)->getTraitInfo();
+      VariantMatchInfo VMI;
+      TI.getAsVariantMatchInfo(ASTContext, VMI);
+      SmallVector<unsigned, 8> ConstructMatches;
+      if (isVariantApplicableInContext(VMI, OMPCtx, /*DeviceOnly*/ false))
+        ApplicableClauses.push_back(C);
+    }
+
+    return Actions.ActOnOpenMPMetaDirective(ApplicableClauses, Loc,
+                                            Tok.getLastLoc());
   }
   case OMPD_threadprivate: {
     // FIXME: Should this be permitted in C++?

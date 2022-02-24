@@ -368,7 +368,9 @@ def OMPC_Filter : Clause<"filter"> {
 def OMPC_Align : Clause<"align"> {
   let clangClass = "OMPAlignClause";
 }
-def OMPC_When: Clause<"when"> {}
+def OMPC_When: Clause<"when"> {
+  let clangClass = "OMPWhenClause";
+}
 
 def OMPC_Bind : Clause<"bind"> {
   let clangClass = "OMPBindClause";

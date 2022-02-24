@@ -2284,6 +2284,18 @@ public:
     return getSema().ActOnOpenMPAlignClause(A, StartLoc, LParenLoc, EndLoc);
   }
 
+  /// Build a new OpenMP 'when' clause.
+  ///
+  /// By default, performs semantic analysis to build the new OpenMP clause.
+  /// Subclasses may override this routine to provide different behavior.
+  OMPClause *RebuildOMPWhenClause(OMPTraitInfo &TI, Stmt *Directive,
+                                  SourceLocation StartLoc,
+                                  SourceLocation LParenLoc,
+                                  SourceLocation EndLoc) {
+    return getSema().ActOnOpenMPWhenClause(TI, Directive, StartLoc, LParenLoc,
+                                           EndLoc);
+  }
+
   /// Rebuild the operand to an Objective-C \@synchronized statement.
   ///
   /// By default, performs semantic analysis to build the new statement.
@@ -10321,6 +10333,13 @@ OMPClause *TreeTransform<Derived>::TransformOMPBindClause(OMPBindClause *C) {
   return getDerived().RebuildOMPBindClause(
       C->getBindKind(), C->getBindKindLoc(), C->getBeginLoc(),
       C->getLParenLoc(), C->getEndLoc());
+}
+
+template <typename Derived>
+OMPClause *TreeTransform<Derived>::TransformOMPWhenClause(OMPWhenClause *C) {
+  return getDerived().RebuildOMPWhenClause(C->getTraitInfo(), C->getDirective(),
+                                           C->getBeginLoc(), C->getLParenLoc(),
+                                           C->getEndLoc());
 }
 
 //===----------------------------------------------------------------------===//

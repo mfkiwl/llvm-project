@@ -10543,7 +10543,7 @@ public:
   /// Called on well-formed '\#pragma omp metadirective' after parsing
   /// of the  associated statement.
   StmtResult ActOnOpenMPMetaDirective(ArrayRef<OMPClause *> Clauses,
-                                      Stmt *AStmt, SourceLocation StartLoc,
+                                      SourceLocation StartLoc,
                                       SourceLocation EndLoc);
 
   // OpenMP directives and clauses.
@@ -11139,7 +11139,8 @@ public:
                                      SourceLocation LParenLoc,
                                      SourceLocation EndLoc);
   /// Called on well-formed 'when' clause.
-  OMPClause *ActOnOpenMPWhenClause(OMPTraitInfo &TI, SourceLocation StartLoc,
+  OMPClause *ActOnOpenMPWhenClause(OMPTraitInfo &TI, StmtResult Directive,
+                                   SourceLocation StartLoc,
                                    SourceLocation LParenLoc,
                                    SourceLocation EndLoc);
   /// Called on well-formed 'default' clause.

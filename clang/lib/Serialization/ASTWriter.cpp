@@ -6864,6 +6864,12 @@ void OMPClauseWriter::VisitOMPBindClause(OMPBindClause *C) {
   Record.AddSourceLocation(C->getBindKindLoc());
 }
 
+void OMPClauseWriter::VisitOMPWhenClause(OMPWhenClause *C) {
+  // TODO: check, not familiar with this.
+  Record.writeOMPTraitInfo(&C->getTraitInfo());
+  Record.AddStmt(C->getDirective());
+}
+
 void ASTRecordWriter::writeOMPTraitInfo(const OMPTraitInfo *TI) {
   writeUInt32(TI->Sets.size());
   for (const auto &Set : TI->Sets) {

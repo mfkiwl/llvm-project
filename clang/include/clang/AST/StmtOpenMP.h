@@ -5456,7 +5456,6 @@ public:
 class OMPMetaDirective final : public OMPExecutableDirective {
   friend class ASTStmtReader;
   friend class OMPExecutableDirective;
-  Stmt *IfStmt;
 
   OMPMetaDirective(SourceLocation StartLoc, SourceLocation EndLoc)
       : OMPExecutableDirective(OMPMetaDirectiveClass,
@@ -5467,16 +5466,13 @@ class OMPMetaDirective final : public OMPExecutableDirective {
                                llvm::omp::OMPD_metadirective, SourceLocation(),
                                SourceLocation()) {}
 
-  void setIfStmt(Stmt *S) { IfStmt = S; }
-
 public:
   static OMPMetaDirective *Create(const ASTContext &C, SourceLocation StartLoc,
                                   SourceLocation EndLoc,
-                                  ArrayRef<OMPClause *> Clauses,
-                                  Stmt *AssociatedStmt, Stmt *IfStmt);
+                                  ArrayRef<OMPClause *> Clauses);
+
   static OMPMetaDirective *CreateEmpty(const ASTContext &C, unsigned NumClauses,
                                        EmptyShell);
-  Stmt *getIfStmt() const { return IfStmt; }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == OMPMetaDirectiveClass;

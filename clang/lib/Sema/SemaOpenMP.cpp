@@ -21631,3 +21631,17 @@ OMPClause *Sema::ActOnOpenMPBindClause(OpenMPBindClauseKind Kind,
   return OMPBindClause::Create(Context, Kind, KindLoc, StartLoc, LParenLoc,
                                EndLoc);
 }
+
+OMPClause *Sema::ActOnOpenMPWhenClause(OMPTraitInfo &TI, StmtResult Directive,
+                                       SourceLocation StartLoc,
+                                       SourceLocation LParenLoc,
+                                       SourceLocation EndLoc) {
+  return new (Context)
+      OMPWhenClause(TI, Directive.get(), StartLoc, LParenLoc, EndLoc);
+}
+
+StmtResult Sema::ActOnOpenMPMetaDirective(ArrayRef<OMPClause *> Clauses,
+                                          SourceLocation StartLoc,
+                                          SourceLocation EndLoc) {
+  return OMPMetaDirective::Create(Context, StartLoc, EndLoc, Clauses);
+}

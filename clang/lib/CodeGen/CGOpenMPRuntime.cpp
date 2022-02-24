@@ -10762,6 +10762,12 @@ void CGOpenMPRuntime::scanForTargetRegionsFunctions(const Stmt *S,
   }
 
   if (const auto *E = dyn_cast<OMPExecutableDirective>(S)) {
+    if (E->getDirectiveKind() == OMPD_metadirective) {
+      for (const auto *C : E->getClausesOfKind<OMPWhenClause>())
+        if (C->getDirective())
+          scanForTargetRegionsFunctions(C->getDirective(), ParentName);
+    }
+
     if (!E->hasAssociatedStmt() || !E->getAssociatedStmt())
       return;
 

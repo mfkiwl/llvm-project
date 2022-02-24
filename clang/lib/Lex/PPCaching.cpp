@@ -37,12 +37,18 @@ void Preprocessor::CommitBacktrackedTokens() {
 
 // Make Preprocessor re-lex the tokens that were lexed since
 // EnableBacktrackAtThisPos() was previously called.
-void Preprocessor::Backtrack() {
-  assert(!BacktrackPositions.empty()
-         && "EnableBacktrackAtThisPos was not called!");
+void Preprocessor::Backtrack(bool ReverseAnnotations = false) {
+  assert(!BacktrackPositions.empty() &&
+         "EnableBacktrackAtThisPos was not called!");
   CachedLexPos = BacktrackPositions.back();
   BacktrackPositions.pop_back();
   recomputeCurLexerKind();
+
+  if (ReverseAnnotations) {
+    CachedTokens.erase(CachedTokens.begin() + CachedLexPos, CachedTokens.end());
+    CachedTokens.append(UnannotatedCachedTokens.begin() + CachedLexPos,
+                        UnannotatedCachedTokens.end());
+  }
 }
 
 void Preprocessor::CachingLex(Token &Result) {
@@ -66,6 +72,7 @@ void Preprocessor::CachingLex(Token &Result) {
     // Cache the lexed token.
     EnterCachingLexModeUnchecked();
     CachedTokens.push_back(Result);
+    UnannotatedCachedTokens.push_back(Result);
     ++CachedLexPos;
     return;
   }
@@ -75,6 +82,7 @@ void Preprocessor::CachingLex(Token &Result) {
   } else {
     // All cached tokens were consumed.
     CachedTokens.clear();
+    UnannotatedCachedTokens.clear();
     CachedLexPos = 0;
   }
 }
@@ -106,8 +114,10 @@ const Token &Preprocessor::PeekAhead(unsigned N) {
   assert(CachedLexPos + N > CachedTokens.size() && "Confused caching.");
   ExitCachingLexMode();
   for (size_t C = CachedLexPos + N - CachedTokens.size(); C > 0; --C) {
-    CachedTokens.push_back(Token());
-    Lex(CachedTokens.back());
+    Token Result;
+    Lex(Result);
+    CachedTokens.push_back(Result);
+    UnannotatedCachedTokens.push_back(Result);
   }
   EnterCachingLexMode();
   return CachedTokens.back();

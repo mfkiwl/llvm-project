@@ -964,9 +964,9 @@ private:
       P.PP.CommitBacktrackedTokens();
       isActive = false;
     }
-    void Revert() {
+    void Revert(bool ReverseAnnotations = false) {
       assert(isActive && "Parsing action was finished!");
-      P.PP.Backtrack();
+      P.PP.Backtrack(ReverseAnnotations);
       P.PreferredType = PrevPreferredType;
       P.Tok = PrevTok;
       P.TentativelyDeclaredIdentifiers.resize(

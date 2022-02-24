@@ -8612,6 +8612,80 @@ public:
   }
 };
 
+/// This represents 'when' clause in the '#pragma omp metadirective'
+/// directive.
+///
+/// \code
+/// #pragma omp metadirective when(user={condition(N<10)}: parallel)
+/// \endcode
+/// In this example directive '#pragma omp metadirective' has simple 'when'
+/// clause with user defined condition.
+class OMPTraitInfo;
+class OMPWhenClause final : public OMPClause {
+  friend class OMPClauseReader;
+
+  OMPTraitInfo *TI;
+  Stmt *Directive;
+
+  /// Location of '('.
+  SourceLocation LParenLoc;
+
+public:
+  /// Build 'when' clause with arguments \a T for traits, \a D for the
+  /// associated directive.
+  ///
+  /// \param T TraitInfo containing information about the context selector
+  /// \param D The statement associated with the when clause
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  OMPWhenClause(OMPTraitInfo &T, Stmt *D, SourceLocation StartLoc,
+                SourceLocation LParenLoc, SourceLocation EndLoc)
+      : OMPClause(llvm::omp::OMPC_when, StartLoc, EndLoc), TI(&T), Directive(D),
+        LParenLoc(LParenLoc) {}
+
+  /// Build an empty clause.
+  OMPWhenClause()
+      : OMPClause(llvm::omp::OMPC_when, SourceLocation(), SourceLocation()) {}
+
+  /// Sets the location of '('.
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+
+  /// Returns the location of '('.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// Returns the associated OpenMP directive.
+  Stmt *getDirective() const { return Directive; }
+
+  /// Set the associated OpenMP directive.
+  void setDirective(Stmt *S) { Directive = S; }
+
+  /// Returns the OMPTraitInfo
+  OMPTraitInfo &getTraitInfo() const { return *TI; }
+
+  /// Set the OMPTraitInfo
+  void setTraitInfo(OMPTraitInfo *T) { TI = T; }
+
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+
+  const_child_range children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+
+  child_range used_children() {
+    return child_range(child_iterator(), child_iterator());
+  }
+  const_child_range used_children() const {
+    return const_child_range(const_child_iterator(), const_child_iterator());
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == llvm::omp::OMPC_when;
+  }
+};
+
 /// This class implements a simple visitor for OMPClause
 /// subclasses.
 template<class ImplClass, template <typename> class Ptr, typename RetTy>

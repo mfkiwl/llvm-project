@@ -24,6 +24,7 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/PrettyStackTrace.h"
+#include "clang/Parse/ParseDiagnostic.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Frontend/OpenMP/OMPConstants.h"
 #include "llvm/Frontend/OpenMP/OMPIRBuilder.h"
@@ -1788,8 +1789,72 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
   checkForLastprivateConditionalUpdate(*this, S);
 }
 
-void CodeGenFunction::EmitOMPMetaDirective(const OMPMetaDirective &S) {
-  EmitStmt(S.getIfStmt());
+void CodeGenFunction::EmitOMPMetaDirective(const OMPMetaDirective &D) {
+  llvm::BasicBlock *AfterBlock =
+      createBasicBlock("omp.meta.user.condition.after");
+
+  SmallVector<const OMPWhenClause *, 4> StaticWhenClauses;
+  SmallVector<VariantMatchInfo, 4> StaticVMIs;
+
+  for (auto *C : D.getClausesOfKind<OMPWhenClause>()) {
+    OMPTraitInfo &TI = C->getTraitInfo();
+
+    llvm::BasicBlock *ExitBlock =
+        createBasicBlock("omp.meta.user.condition.exit");
+
+    // Emit code to generate a dynamic condition, returns true if there is a
+    // condition, false otherwise.
+    auto GenerateCond = [&](Expr *&E, bool IsScore) {
+      if (IsScore)
+        return false;
+
+      // Do not emit code if the expression is statically resolvable, will be
+      // handled as a static when clause.
+      if (E->getIntegerConstantExpr(getContext()))
+        return false;
+
+      llvm::BasicBlock *TrueBlock = createBasicBlock("omp.meta.user.condition");
+      EmitBranchOnBoolExpr(E, TrueBlock, ExitBlock,
+                           getProfileCount(C->getDirective()));
+      EmitBlock(TrueBlock);
+      EmitStmt(C->getDirective());
+      EmitBranch(AfterBlock);
+
+      return true;
+    };
+
+    // If there is no dynamic condition for the clause then add it to the
+    // static clauses and resolve later the best match to generate code for.
+    // This also handles the default clause.
+    if (!TI.anyScoreOrCondition(GenerateCond)) {
+      StaticWhenClauses.push_back(C);
+      VariantMatchInfo VMI;
+      TI.getAsVariantMatchInfo(getContext(), VMI);
+      StaticVMIs.push_back(VMI);
+    } else
+      EmitBlock(ExitBlock);
+  }
+
+  // Emit code for static clauses, if any.
+  if (!StaticWhenClauses.empty()) {
+    std::function<void(StringRef)> DiagUnknownTrait = [&](StringRef ISATrait) {
+      CGM.getDiags().Report(D.getBeginLoc(),
+                            diag::warn_unknown_declare_variant_isa_trait)
+          << ISATrait;
+    };
+
+    TargetOMPContext OMPCtx(
+        getContext(), std::move(DiagUnknownTrait),
+        /* CurrentFunctionDecl */ nullptr,
+        /* ConstructTraits */ ArrayRef<llvm::omp::TraitProperty>());
+
+    int BestIdx = getBestVariantMatchForContext(StaticVMIs, OMPCtx);
+
+    EmitStmt(StaticWhenClauses[BestIdx]->getDirective());
+    EmitBranch(AfterBlock);
+  }
+
+  EmitBlock(AfterBlock);
 }
 
 namespace {

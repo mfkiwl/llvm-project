@@ -899,6 +899,7 @@ private:
   /// Cached tokens are stored here when we do backtracking or
   /// lookahead. They are "lexed" by the CachingLex() method.
   CachedTokensTy CachedTokens;
+  CachedTokensTy UnannotatedCachedTokens;
 
   /// The position of the cached token that CachingLex() should
   /// "lex" next.
@@ -1458,7 +1459,7 @@ public:
 
   /// Make Preprocessor re-lex the tokens that were lexed since
   /// EnableBacktrackAtThisPos() was previously called.
-  void Backtrack();
+  void Backtrack(bool RevertAnnotations);
 
   /// True if EnableBacktrackAtThisPos() was called and
   /// caching of tokens is on.

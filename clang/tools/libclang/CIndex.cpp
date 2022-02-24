@@ -2591,6 +2591,10 @@ void OMPClauseEnqueue::VisitOMPAffinityClause(const OMPAffinityClause *C) {
 }
 void OMPClauseEnqueue::VisitOMPBindClause(const OMPBindClause *C) {}
 
+void OMPClauseEnqueue::VisitOMPWhenClause(const OMPWhenClause *C) {
+  Visitor->AddStmt(C->getDirective());
+}
+
 } // namespace
 
 void EnqueueVisitor::EnqueueChildren(const OMPClause *S) {

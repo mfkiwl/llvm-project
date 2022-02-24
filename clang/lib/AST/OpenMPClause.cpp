@@ -15,6 +15,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclOpenMP.h"
+#include "clang/AST/StmtOpenMP.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/TargetInfo.h"
@@ -2334,6 +2335,32 @@ void OMPClausePrinter::VisitOMPBindClause(OMPBindClause *Node) {
      << ")";
 }
 
+void OMPClausePrinter::VisitOMPWhenClause(OMPWhenClause *Node) {
+  OMPTraitInfo &TI = Node->getTraitInfo();
+  if (TI.Sets.empty())
+    OS << "default(";
+  else
+    OS << "when(";
+  TI.print(OS, Policy);
+  Stmt *S = Node->getDirective();
+  if (S) {
+    OS << ":";
+    OMPExecutableDirective *D = cast<OMPExecutableDirective>(S);
+    auto DKind = D->getDirectiveKind();
+    OS << getOpenMPDirectiveName(DKind);
+
+    OMPClausePrinter Printer(OS, Policy);
+    ArrayRef<OMPClause *> Clauses = D->clauses();
+    for (auto *Clause : Clauses)
+      if (Clause && !Clause->isImplicit()) {
+        OS << ' ';
+        Printer.Visit(Clause);
+      }
+  }
+  OS << ")";
+  return;
+}
+
 void OMPTraitInfo::getAsVariantMatchInfo(ASTContext &ASTCtx,
                                          VariantMatchInfo &VMI) const {
   for (const OMPTraitSet &Set : Sets) {
@@ -2348,13 +2375,13 @@ void OMPTraitInfo::getAsVariantMatchInfo(ASTContext &ASTCtx,
                    TraitProperty::user_condition_unknown &&
                "Ill-formed user condition, expected unknown trait property!");
 
+        // If Condition is statically resolvable add it as a trait, otherwise
+        // do nothing since codegen will generate dynamic conditions.
         if (Optional<APSInt> CondVal =
                 Selector.ScoreOrCondition->getIntegerConstantExpr(ASTCtx))
           VMI.addTrait(CondVal->isZero() ? TraitProperty::user_condition_false
                                          : TraitProperty::user_condition_true,
                        "<condition>");
-        else
-          VMI.addTrait(TraitProperty::user_condition_false, "<condition>");
         continue;
       }
 

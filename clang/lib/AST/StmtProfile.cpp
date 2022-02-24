@@ -886,6 +886,11 @@ void OMPClauseProfiler::VisitOMPAffinityClause(const OMPAffinityClause *C) {
 }
 void OMPClauseProfiler::VisitOMPOrderClause(const OMPOrderClause *C) {}
 void OMPClauseProfiler::VisitOMPBindClause(const OMPBindClause *C) {}
+
+void OMPClauseProfiler::VisitOMPWhenClause(const OMPWhenClause *C) {
+  if (C->getDirective())
+    Profiler->VisitStmt(C->getDirective());
+}
 } // namespace
 
 void

@@ -262,11 +262,10 @@ void OMPLoopDirective::setFinalsConditions(ArrayRef<Expr *> A) {
 OMPMetaDirective *OMPMetaDirective::Create(const ASTContext &C,
                                            SourceLocation StartLoc,
                                            SourceLocation EndLoc,
-                                           ArrayRef<OMPClause *> Clauses,
-                                           Stmt *AssociatedStmt, Stmt *IfStmt) {
-  auto *Dir = createDirective<OMPMetaDirective>(
-      C, Clauses, AssociatedStmt, /*NumChildren=*/1, StartLoc, EndLoc);
-  Dir->setIfStmt(IfStmt);
+                                           ArrayRef<OMPClause *> Clauses) {
+  auto *Dir =
+      createDirective<OMPMetaDirective>(C, Clauses, /*AssociatedStmt*/ nullptr,
+                                        /*NumChildren=*/0, StartLoc, EndLoc);
   return Dir;
 }
 
