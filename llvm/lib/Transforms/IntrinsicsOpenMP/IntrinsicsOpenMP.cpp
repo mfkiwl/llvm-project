@@ -18,12 +18,14 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Pass.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IntrinsicsOpenMP/IntrinsicsOpenMP.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
+#include "llvm/Transforms/Utils/CodeExtractor.h"
 
 using namespace llvm;
 using namespace omp;
@@ -63,6 +65,10 @@ namespace {
       {"QUAL.OMP.REDUCTION.ADD", DSA_REDUCTION_ADD},
   };
 
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  using BodyGenCallbackTy = OpenMPIRBuilder::BodyGenCallbackTy;
+  using FinalizeCallbackTy = OpenMPIRBuilder::FinalizeCallbackTy;
+
   struct CGReduction {
     static OpenMPIRBuilder::InsertPointTy
     sumReduction(OpenMPIRBuilder::InsertPointTy IP, Value *LHS, Value *RHS,
@@ -96,9 +102,185 @@ namespace {
     }
   };
 
-  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
-  using BodyGenCallbackTy = OpenMPIRBuilder::BodyGenCallbackTy;
-  using FinalizeCallbackTy = OpenMPIRBuilder::FinalizeCallbackTy;
+struct Outliner {
+      static Function*
+      createOutlinedFunction(Module &M, OpenMPIRBuilder &OMPBuilder,
+                             MapVector<Value *, DSAType> &DSAValueMap,
+                             Function *OuterFn, BasicBlock *BBEntry, BasicBlock *StartBB,
+                             BasicBlock *EndBB, BasicBlock *AfterBB,
+                             SmallVectorImpl<llvm::Value *> &CapturedVars) {
+        SmallVector<Value *, 16> Privates;
+        SmallVector<Value *, 16> CapturedShared;
+        SmallVector<Value *, 16> CapturedFirstprivate;
+        for (auto &It : DSAValueMap) {
+          Value *V = It.first;
+          auto DSA = It.second;
+
+          if (DSA_PRIVATE == DSA)
+            Privates.push_back(V);
+          else if (DSA_FIRSTPRIVATE == DSA)
+            CapturedFirstprivate.push_back(V);
+          else if (DSA_SHARED == DSA)
+            CapturedShared.push_back(V);
+          else
+            assert(false && "Unsupported DSA type");
+        }
+
+        OpenMPIRBuilder::OutlineInfo OI;
+        OI.EntryBB = StartBB;
+        OI.ExitBB = EndBB;
+        SmallPtrSet<BasicBlock *, 8> BlockSet;
+        SmallVector<BasicBlock *, 8> BlockVector;
+        OI.collectBlocks(BlockSet, BlockVector);
+
+        SmallVector<Type *, 16> Params;
+        // tid
+        Params.push_back(OMPBuilder.Int32Ptr);
+        // bound_tid
+        Params.push_back(OMPBuilder.Int32Ptr);
+        for(auto *V : CapturedShared)
+          Params.push_back(V->getType());
+        for(auto *V : CapturedFirstprivate)
+          Params.push_back(V->getType());
+
+        FunctionType *OutlinedFnTy =
+            FunctionType::get(OMPBuilder.Void, Params, /* isVarArgs */ false);
+        Function *OutlinedFn =
+            Function::Create(OutlinedFnTy, GlobalValue::InternalLinkage,
+                             OuterFn->getName() + ".omp_outlined", M);
+
+        // Name the parameters.
+        OutlinedFn->arg_begin()->setName("global_tid");
+        std::next(OutlinedFn->arg_begin())->setName("bound_tid");
+        Function::arg_iterator AI = std::next(OutlinedFn->arg_begin(), 2);
+        int num_arg = 2;
+        for(auto *V : CapturedShared) {
+          AI->setName(V->getName() + ".shared");
+          OutlinedFn->addParamAttr(num_arg, Attribute::NonNull);
+          OutlinedFn->addParamAttr(num_arg, Attribute::get(M.getContext(), Attribute::Dereferenceable, 8));
+          ++AI;
+          ++num_arg;
+        }
+        for (auto *V : CapturedFirstprivate) {
+          AI->setName(V->getName() + ".firstprivate");
+          OutlinedFn->addParamAttr(num_arg, Attribute::NonNull);
+          OutlinedFn->addParamAttr(num_arg, Attribute::get(M.getContext(), Attribute::Dereferenceable, 8));
+          ++AI;
+        }
+
+        BasicBlock *OutlinedEntryBB =
+            BasicBlock::Create(M.getContext(), ".outlined.entry", OutlinedFn);
+        BasicBlock *OutlinedExitBB = BasicBlock::Create(M.getContext(), ".outlined.exit", OutlinedFn);
+        OMPBuilder.Builder.SetInsertPoint(OutlinedEntryBB);
+
+        OutlinedFn->addParamAttr(0, Attribute::NoAlias);
+        OutlinedFn->addParamAttr(1, Attribute::NoAlias);
+        OutlinedFn->addFnAttr(Attribute::NoUnwind);
+        OutlinedFn->addFnAttr(Attribute::NoRecurse);
+
+        auto CollectUses = [&BlockSet](Value *V, SetVector<Use *> &Uses) {
+          for (Use &U : V->uses())
+            if (auto *UserI = dyn_cast<Instruction>(U.getUser()))
+              if (BlockSet.count(UserI->getParent()))
+                Uses.insert(&U);
+        };
+
+        auto ReplaceUses = [](SetVector<Use *> &Uses, Value *ReplacementValue) {
+          for (Use *UPtr : Uses)
+            UPtr->set(ReplacementValue);
+        };
+
+        for (auto *V : Privates) {
+          SetVector<Use *> Uses;
+          CollectUses(V, Uses);
+
+          Type *VTy = V->getType()->getPointerElementType();
+          Value *ReplacementValue = OMPBuilder.Builder.CreateAlloca(
+              VTy, nullptr, V->getName() + ".private");
+
+          ReplaceUses(Uses, ReplacementValue);
+        }
+
+        AI = std::next(OutlinedFn->arg_begin(), 2);
+        for (auto *V : CapturedShared) {
+          SetVector<Use *> Uses;
+          CollectUses(V, Uses);
+
+          Value *ReplacementValue = AI;
+
+          ReplaceUses(Uses, ReplacementValue);
+          ++AI;
+        }
+
+        for (auto *V : CapturedFirstprivate) {
+          SetVector<Use *> Uses;
+          CollectUses(V, Uses);
+
+          Type *VTy = V->getType()->getPointerElementType();
+          Value *ReplacementValue = OMPBuilder.Builder.CreateAlloca(
+              VTy, nullptr, V->getName() + ".copy");
+          Value *Load = OMPBuilder.Builder.CreateLoad(VTy, AI, V->getName() + ".reload");
+          OMPBuilder.Builder.CreateStore(Load, ReplacementValue);
+
+          ReplaceUses(Uses, ReplacementValue);
+
+          ++AI;
+        }
+
+        OMPBuilder.Builder.CreateBr(StartBB);
+
+        EndBB->getTerminator()->setSuccessor(0, OutlinedExitBB);
+        OMPBuilder.Builder.SetInsertPoint(OutlinedExitBB);
+        OMPBuilder.Builder.CreateRetVoid();
+
+        for(auto *BB : BlockSet)
+          BB->moveAfter(&OutlinedFn->getEntryBlock());
+
+        dbgs() << "=== Dump OutlinedFn\n" << *OutlinedFn << "=== End of Dump OutlinedFn\n";
+
+        /*
+        const DebugLoc DL = BBEntry->getTerminator()->getDebugLoc();
+        BBEntry->getTerminator()->eraseFromParent();
+        OpenMPIRBuilder::LocationDescription Loc(
+            InsertPointTy(BBEntry, BBEntry->end()), DL);
+
+
+        dbgs() << "=== BEFORE Dump OuterFn\n" << *OuterFn << "=== End of Dump OuterFn\n";
+
+        Constant *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(Loc);
+        OMPBuilder.Builder.restoreIP(Loc.IP);
+        OMPBuilder.Builder.SetCurrentDebugLocation(Loc.DL);
+
+        Value *Ident = OMPBuilder.getOrCreateIdent(SrcLocStr);
+        //Value *ThreadID = OMPBuilder.getOrCreateThreadID(Ident);
+
+        auto *OutlinedFnCast = OMPBuilder.Builder.CreateBitCast(
+            OutlinedFn, OMPBuilder.ParallelTaskPtr);
+        FunctionCallee ForkCall = OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_fork_call);
+        SmallVector<Value *, 16> ForkArgs;
+        ForkArgs.append(
+            {Ident,
+             OMPBuilder.Builder.getInt32(CapturedShared.size() +
+                                         CapturedFirstprivate.size()),
+             OutlinedFnCast});
+        ForkArgs.append(CapturedShared);
+        ForkArgs.append(CapturedFirstprivate);
+
+        OMPBuilder.Builder.CreateCall(ForkCall, ForkArgs);
+        OMPBuilder.Builder.CreateBr(AfterBB);
+
+        dbgs() << "=== Dump OuterFn\n" << *OuterFn << "=== End of Dump OuterFn\n";
+        */
+
+        if (verifyFunction(*OutlinedFn, &errs()))
+          report_fatal_error("Verification of OutlinedFn failed!");
+
+        CapturedVars.append(CapturedShared);
+        CapturedVars.append(CapturedFirstprivate);
+        return OutlinedFn;
+      }
+
+    };
 
   struct IntrinsicsOpenMP: public ModulePass {
     static char ID; // Pass identification, replacement for typeid
@@ -216,6 +398,163 @@ namespace {
         OMPBuilder.createReductions(BodyIP, BodyAllocaIP, ReductionInfos);
 
       BranchInst::Create(AfterBB, AfterIP.getBlock());
+    }
+
+    static void emitOMPParallelDevice(Module &M, OpenMPIRBuilder &OMPBuilder,
+                                      MapVector<Value *, DSAType> &DSAValueMap,
+                                      const DebugLoc &DL, Function *OuterFn,
+                                      BasicBlock *BBEntry, BasicBlock *StartBB,
+                                      BasicBlock *EndBB, BasicBlock *AfterBB,
+                                      Value *IfCondition, Value *NumThreads) {
+      // Extract parallel region
+#if 0
+      CodeExtractorAnalysisCache CEAC(Fn);
+      CodeExtractor Extractor(Blocks, /* DominatorTree */ nullptr,
+                              /* AggregateArgs */ false,
+                              /* BlockFrequencyInfo */ nullptr,
+                              /* BranchProbabilityInfo */ nullptr,
+                              /* AssumptionCache */ nullptr,
+                              /* AllowVarArgs */ true,
+                              /* AllowAlloca */ true,
+                              /* Suffix */ ".omp_par_device");
+#endif
+      SmallVector<Value *, 16> CapturedVars;
+      Function *OutlinedFn = Outliner::createOutlinedFunction(
+          M, OMPBuilder, DSAValueMap, OuterFn, BBEntry, StartBB, EndBB, AfterBB,
+          CapturedVars);
+
+      // Create wrapper for worker threads
+      SmallVector<Type *, 2> Params;
+      // parallelism level, unused?
+      Params.push_back(OMPBuilder.Int16);
+      // tid
+      Params.push_back(OMPBuilder.Int32);
+
+      FunctionType *OutlinedWrapperFnTy =
+          FunctionType::get(OMPBuilder.Void, Params, /* isVarArgs */ false);
+      Function *OutlinedWrapperFn =
+          Function::Create(OutlinedWrapperFnTy, GlobalValue::InternalLinkage,
+                           OutlinedFn->getName() + ".wrapper", M);
+      BasicBlock *OutlinedWrapperEntryBB =
+          BasicBlock::Create(M.getContext(), "entry", OutlinedWrapperFn);
+
+      // Code generation for the outlined wrapper function.
+      OMPBuilder.Builder.SetInsertPoint(OutlinedWrapperEntryBB);
+
+      constexpr const int TIDArgNo = 1;
+      AllocaInst *TIDAddr = OMPBuilder.Builder.CreateAlloca(OMPBuilder.Int32, nullptr, ".tid.addr");
+      AllocaInst *ZeroAddr = OMPBuilder.Builder.CreateAlloca(OMPBuilder.Int32, nullptr, "zero.addr");
+      AllocaInst *GlobalArgs = OMPBuilder.Builder.CreateAlloca(OMPBuilder.Int8PtrPtr, nullptr, "global_args");
+
+      OMPBuilder.Builder.CreateStore(OutlinedWrapperFn->getArg(TIDArgNo), TIDAddr);
+      OMPBuilder.Builder.CreateStore(Constant::getNullValue(OMPBuilder.Int32), ZeroAddr);
+      FunctionCallee KmpcGetSharedVariables =
+          OMPBuilder.getOrCreateRuntimeFunction(
+              M, OMPRTL___kmpc_get_shared_variables);
+      OMPBuilder.Builder.CreateCall(KmpcGetSharedVariables, {GlobalArgs});
+
+      SmallVector<Value *, 16> OutlinedFnArgs;
+      OutlinedFnArgs.push_back(TIDAddr);
+      OutlinedFnArgs.push_back(ZeroAddr);
+      #if 0
+      for (size_t ArgNo = 2, GlobalArgNo = 0; ArgNo < OutlinedFn->arg_size();
+           ++ArgNo, ++GlobalArgNo) {
+        Value *LoadGlobalArgs =
+            OMPBuilder.Builder.CreateLoad(OMPBuilder.Int8PtrPtr, GlobalArgs);
+        Value *GEP = OMPBuilder.Builder.CreateConstInBoundsGEP1_64(
+            OMPBuilder.Int8Ptr, LoadGlobalArgs, GlobalArgNo);
+        Value *Bitcast = OMPBuilder.Builder.CreateBitCast(
+            GEP, OutlinedFn->getArg(ArgNo)->getType()->getPointerTo());
+        Value *Load = OMPBuilder.Builder.CreateLoad(
+            OutlinedFn->getArg(ArgNo)->getType(), Bitcast);
+        OutlinedFnArgs.push_back(Load);
+      }
+      #endif
+      #if 1
+      for (size_t Idx = 0; Idx < CapturedVars.size(); ++Idx) {
+        dbgs() << "CapturedVar " << Idx << " " << *CapturedVars[Idx] << "\n";
+        dbgs() << "OutlinedArg " << *OutlinedFn->getArg(Idx+2) << "\n";
+        Value *LoadGlobalArgs =
+            OMPBuilder.Builder.CreateLoad(OMPBuilder.Int8PtrPtr, GlobalArgs);
+        Value *GEP = OMPBuilder.Builder.CreateConstInBoundsGEP1_64(
+            OMPBuilder.Int8Ptr, LoadGlobalArgs, Idx);
+        Value *Bitcast = OMPBuilder.Builder.CreateBitCast(
+            GEP, CapturedVars[Idx]->getType()->getPointerTo());
+        Value *Load = OMPBuilder.Builder.CreateLoad(
+            CapturedVars[Idx]->getType(), Bitcast);
+        OutlinedFnArgs.push_back(Load);
+      }
+      #endif
+
+      OMPBuilder.Builder.CreateCall(OutlinedFn->getFunctionType(), OutlinedFn,
+                                    OutlinedFnArgs);
+      OMPBuilder.Builder.CreateRetVoid();
+
+      if (verifyFunction(*OutlinedWrapperFn, &errs()))
+        report_fatal_error("Verification of OutlinedWrapperFn failed!");
+
+      LLVM_DEBUG(dbgs() << "=== Dump OutlinedWrapper\n"
+                        << *OutlinedWrapperFn
+                        << "=== End of Dump OutlinedWrapper\n");
+
+      // Setup the call to kmpc_parallel_51
+      BBEntry->getTerminator()->eraseFromParent();
+      OpenMPIRBuilder::LocationDescription Loc(
+          InsertPointTy(BBEntry, BBEntry->end()), DL);
+
+      Constant *SrcLocStr = OMPBuilder.getOrCreateSrcLocStr(Loc);
+      OMPBuilder.Builder.restoreIP(Loc.IP);
+      OMPBuilder.Builder.SetCurrentDebugLocation(Loc.DL);
+
+      // Create the address table of the global data.
+      // The number of outlined arguments without global_tid, bound_tid.
+      Value *NumCapturedArgs = ConstantInt::get(OMPBuilder.SizeTy, CapturedVars.size());
+      Type *CapturedVarsAddrsTy = ArrayType::get(OMPBuilder.Int8Ptr, CapturedVars.size());
+      // TODO: move alloca to the entry block of the outer function.
+      Value *CapturedVarsAddrs = OMPBuilder.Builder.CreateAlloca(
+          CapturedVarsAddrsTy, nullptr, ".captured_var_addrs");
+      for (size_t Idx = 0; Idx < CapturedVars.size(); ++Idx) {
+        LLVM_DEBUG(dbgs() << "CapturedVar " << Idx << " " << *CapturedVars[Idx] << "\n");
+        Value *GEP = OMPBuilder.Builder.CreateConstInBoundsGEP2_64(CapturedVarsAddrsTy, CapturedVarsAddrs, 0, Idx);
+        Value *Bitcast = OMPBuilder.Builder.CreateBitCast(CapturedVars[Idx], OMPBuilder.Int8Ptr);
+        OMPBuilder.Builder.CreateStore(Bitcast, GEP);
+      }
+
+      Value *Ident = OMPBuilder.getOrCreateIdent(SrcLocStr);
+      Value *ThreadID = OMPBuilder.getOrCreateThreadID(Ident);
+
+      if (!IfCondition)
+        IfCondition = Constant::getNullValue(OMPBuilder.Int32);
+
+      if (!NumThreads)
+        NumThreads = Constant::getNullValue(OMPBuilder.Int32);
+
+      FunctionCallee KmpcParallel51 =
+          OMPBuilder.getOrCreateRuntimeFunction(M, OMPRTL___kmpc_parallel_51);
+
+      // Set proc_bind to -1 by default as it is unused.
+      assert(Ident && "Expected non-null Ident");
+      assert(ThreadID && "Expected non-null ThreadID");
+      assert(IfCondition && "Expected non-null IfCondition");
+      assert(NumThreads && "Expected non-null NumThreads");
+      assert(OutlinedWrapperFn && "Expected non-null OutlinedWrapperFn");
+      assert(CapturedVarsAddrs && "Expected non-null CapturedVarsAddrs");
+      assert(NumCapturedArgs && "Expected non-null NumCapturedArgs");
+
+      Value *ProcBind = OMPBuilder.Builder.getInt32(-1);
+      Value *OutlinedFnBitcast = OMPBuilder.Builder.CreateBitCast(OutlinedFn, OMPBuilder.VoidPtr);
+      Value *OutlinedWrapperFnBitcast = OMPBuilder.Builder.CreateBitCast(OutlinedWrapperFn, OMPBuilder.VoidPtr);
+      Value *CapturedVarAddrsBitcast = OMPBuilder.Builder.CreateBitCast(CapturedVarsAddrs, OMPBuilder.VoidPtrPtr);
+      OMPBuilder.Builder.CreateCall(
+          KmpcParallel51, {Ident, ThreadID, IfCondition, NumThreads, ProcBind,
+                           OutlinedFnBitcast, OutlinedWrapperFnBitcast,
+                           CapturedVarAddrsBitcast, NumCapturedArgs});
+      OMPBuilder.Builder.CreateBr(AfterBB);
+
+      LLVM_DEBUG(dbgs() << "=== Dump OuterFn\n" << *OuterFn << "=== End of Dump OuterFn\n");
+
+      if (verifyFunction(*OuterFn, &errs()))
+        report_fatal_error("Verification of OuterFn failed!");
     }
 
     static void emitOMPFor(Module &M, OpenMPIRBuilder &OMPBuilder,
@@ -679,6 +1018,18 @@ namespace {
 
       OpenMPIRBuilder OMPBuilder(M);
       OMPBuilder.initialize();
+      Triple TargetTriple(M.getTargetTriple());
+      bool IsOpenMPDevice = false;
+      switch (TargetTriple.getArch()) {
+      case llvm::Triple::nvptx:
+      case llvm::Triple::nvptx64:
+      case llvm::Triple::amdgcn:
+        LLVM_DEBUG(dbgs() << "Codegen for OpenMP Device runtime\n");
+        IsOpenMPDevice = true;
+        break;
+      default:
+        LLVM_DEBUG(dbgs() << "Codegen for OpenMP CPU runtime\n");
+      }
 
       LLVM_DEBUG(dbgs() << "=== Dump module\n" << M << "=== End of Dump module\n");
 
@@ -812,9 +1163,14 @@ namespace {
         CBEntry->eraseFromParent();
 
         if (Dir == OMPD_parallel) {
-          emitOMPParallel(OMPBuilder, DSAValueMap, DL, Fn, BBEntry, StartBB,
-                          EndBB, AfterBB, FiniCB,
-                          ParRegionInfo.IfCondition, ParRegionInfo.NumThreads);
+          if (IsOpenMPDevice)
+            emitOMPParallelDevice(M, OMPBuilder, DSAValueMap, DL, Fn, BBEntry,
+                                  StartBB, EndBB, AfterBB, ParRegionInfo.IfCondition,
+                                  ParRegionInfo.NumThreads);
+          else
+            emitOMPParallel(OMPBuilder, DSAValueMap, DL, Fn, BBEntry, StartBB,
+                            EndBB, AfterBB, FiniCB, ParRegionInfo.IfCondition,
+                            ParRegionInfo.NumThreads);
 
           LLVM_DEBUG(dbgs() << "=== Before Fn\n" << *Fn << "=== End of Before Fn\n");
           OMPBuilder.finalize(Fn, /* AllowExtractorSinking */ true);
