@@ -12,6 +12,7 @@ set(LLVM_LINK_COMPONENTS
   AggressiveInstCombine
   InstCombine
   Instrumentation
+  IntrinsicsOpenMP
   LTO
   Linker
   MC
