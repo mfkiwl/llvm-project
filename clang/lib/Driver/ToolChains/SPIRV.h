@@ -36,7 +36,7 @@ public:
                     const char *LinkingOutput) const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+class LLVM_LIBRARY_VISIBILITY Linker final : public Tool {
 public:
   Linker(const ToolChain &TC) : Tool("SPIRV::Linker", "spirv-link", TC) {}
   bool hasIntegratedCPP() const override { return false; }
@@ -57,8 +57,7 @@ class LLVM_LIBRARY_VISIBILITY SPIRVToolChain final : public ToolChain {
 
 public:
   SPIRVToolChain(const Driver &D, const llvm::Triple &Triple,
-                 const llvm::opt::ArgList &Args)
-      : ToolChain(D, Triple, Args) {}
+                 const llvm::opt::ArgList &Args);
 
   bool useIntegratedAs() const override { return true; }
 
@@ -72,6 +71,7 @@ public:
   }
   bool isPICDefaultForced() const override { return false; }
   bool SupportsProfiling() const override { return false; }
+  bool HasNativeLLVMSupport() const override;
 
   clang::driver::Tool *SelectTool(const JobAction &JA) const override;
 
@@ -81,6 +81,7 @@ protected:
 
 private:
   clang::driver::Tool *getTranslator() const;
+  bool NativeLLVMSupport;
 };
 
 } // namespace toolchains

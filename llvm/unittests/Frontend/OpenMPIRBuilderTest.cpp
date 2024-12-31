@@ -27,6 +27,20 @@
 using namespace llvm;
 using namespace omp;
 
+// Wrapper lambdas to allow using EXPECT*() macros inside of error-returning
+// callbacks.
+#define FINICB_WRAPPER(cb)                                                     \
+  [&cb](InsertPointTy IP) -> Error {                                           \
+    cb(IP);                                                                    \
+    return Error::success();                                                   \
+  }
+
+#define BODYGENCB_WRAPPER(cb)                                                  \
+  [&cb](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) -> Error {            \
+    cb(AllocaIP, CodeGenIP);                                                   \
+    return Error::success();                                                   \
+  }
+
 namespace {
 
 /// Create an instruction that uses the values in \p Values. We use "printf"
@@ -175,8 +189,7 @@ protected:
                                std::optional<StringRef>("/src/test.dbg"));
     auto CU =
         DIB.createCompileUnit(dwarf::DW_LANG_C, File, "llvm-C", true, "", 0);
-    auto Type =
-        DIB.createSubroutineType(DIB.getOrCreateTypeArray(std::nullopt));
+    auto Type = DIB.createSubroutineType(DIB.getOrCreateTypeArray({}));
     auto SP = DIB.createFunction(
         CU, "foo", "", File, 1, Type, 1, DINode::FlagZero,
         DISubprogram::SPFlagDefinition | DISubprogram::SPFlagOptimized);
@@ -219,9 +232,13 @@ protected:
       CallInst *CallInst = createPrintfCall(Builder, "%d\\n", {LC});
       if (Call)
         *Call = CallInst;
+
+      return Error::success();
     };
-    CanonicalLoopInfo *Loop =
+    Expected<CanonicalLoopInfo *> LoopResult =
         OMPBuilder.createCanonicalLoop(Loc, LoopBodyGenCB, CastedTripCount);
+    assert(LoopResult && "unexpected error");
+    CanonicalLoopInfo *Loop = *LoopResult;
 
     // Finalize the function.
     Builder.restoreIP(Loop->getAfterIP());
@@ -328,14 +345,18 @@ TEST_F(OpenMPIRBuilderTest, CreateBarrier) {
 
   IRBuilder<> Builder(BB);
 
-  OMPBuilder.createBarrier({IRBuilder<>::InsertPoint()}, OMPD_for);
+  OpenMPIRBuilder::InsertPointOrErrorTy BarrierIP1 =
+      OMPBuilder.createBarrier({IRBuilder<>::InsertPoint()}, OMPD_for);
+  assert(BarrierIP1 && "unexpected error");
   EXPECT_TRUE(M->global_empty());
   EXPECT_EQ(M->size(), 1U);
   EXPECT_EQ(F->size(), 1U);
   EXPECT_EQ(BB->size(), 0U);
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP()});
-  OMPBuilder.createBarrier(Loc, OMPD_for);
+  OpenMPIRBuilder::InsertPointOrErrorTy BarrierIP2 =
+      OMPBuilder.createBarrier(Loc, OMPD_for);
+  assert(BarrierIP2 && "unexpected error");
   EXPECT_FALSE(M->global_empty());
   EXPECT_EQ(M->size(), 3U);
   EXPECT_EQ(F->size(), 1U);
@@ -373,13 +394,15 @@ TEST_F(OpenMPIRBuilderTest, CreateCancel) {
     ASSERT_EQ(IP.getBlock()->end(), IP.getPoint());
     BranchInst::Create(CBB, IP.getBlock());
   };
-  OMPBuilder.pushFinalizationCB({FiniCB, OMPD_parallel, true});
+  OMPBuilder.pushFinalizationCB({FINICB_WRAPPER(FiniCB), OMPD_parallel, true});
 
   IRBuilder<> Builder(BB);
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP()});
-  auto NewIP = OMPBuilder.createCancel(Loc, nullptr, OMPD_parallel);
-  Builder.restoreIP(NewIP);
+  OpenMPIRBuilder::InsertPointOrErrorTy NewIP =
+      OMPBuilder.createCancel(Loc, nullptr, OMPD_parallel);
+  assert(NewIP && "unexpected error");
+  Builder.restoreIP(*NewIP);
   EXPECT_FALSE(M->global_empty());
   EXPECT_EQ(M->size(), 4U);
   EXPECT_EQ(F->size(), 4U);
@@ -401,7 +424,7 @@ TEST_F(OpenMPIRBuilderTest, CreateCancel) {
   EXPECT_EQ(Cancel->getNumUses(), 1U);
   Instruction *CancelBBTI = Cancel->getParent()->getTerminator();
   EXPECT_EQ(CancelBBTI->getNumSuccessors(), 2U);
-  EXPECT_EQ(CancelBBTI->getSuccessor(0), NewIP.getBlock());
+  EXPECT_EQ(CancelBBTI->getSuccessor(0), NewIP->getBlock());
   EXPECT_EQ(CancelBBTI->getSuccessor(1)->size(), 3U);
   CallInst *GTID1 = dyn_cast<CallInst>(&CancelBBTI->getSuccessor(1)->front());
   EXPECT_NE(GTID1, nullptr);
@@ -440,13 +463,15 @@ TEST_F(OpenMPIRBuilderTest, CreateCancelIfCond) {
     ASSERT_EQ(IP.getBlock()->end(), IP.getPoint());
     BranchInst::Create(CBB, IP.getBlock());
   };
-  OMPBuilder.pushFinalizationCB({FiniCB, OMPD_parallel, true});
+  OMPBuilder.pushFinalizationCB({FINICB_WRAPPER(FiniCB), OMPD_parallel, true});
 
   IRBuilder<> Builder(BB);
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP()});
-  auto NewIP = OMPBuilder.createCancel(Loc, Builder.getTrue(), OMPD_parallel);
-  Builder.restoreIP(NewIP);
+  OpenMPIRBuilder::InsertPointOrErrorTy NewIP =
+      OMPBuilder.createCancel(Loc, Builder.getTrue(), OMPD_parallel);
+  assert(NewIP && "unexpected error");
+  Builder.restoreIP(*NewIP);
   EXPECT_FALSE(M->global_empty());
   EXPECT_EQ(M->size(), 4U);
   EXPECT_EQ(F->size(), 7U);
@@ -474,7 +499,7 @@ TEST_F(OpenMPIRBuilderTest, CreateCancelIfCond) {
   EXPECT_EQ(CancelBBTI->getNumSuccessors(), 2U);
   EXPECT_EQ(CancelBBTI->getSuccessor(0)->size(), 1U);
   EXPECT_EQ(CancelBBTI->getSuccessor(0)->getUniqueSuccessor(),
-            NewIP.getBlock());
+            NewIP->getBlock());
   EXPECT_EQ(CancelBBTI->getSuccessor(1)->size(), 3U);
   CallInst *GTID1 = dyn_cast<CallInst>(&CancelBBTI->getSuccessor(1)->front());
   EXPECT_NE(GTID1, nullptr);
@@ -513,13 +538,15 @@ TEST_F(OpenMPIRBuilderTest, CreateCancelBarrier) {
     ASSERT_EQ(IP.getBlock()->end(), IP.getPoint());
     BranchInst::Create(CBB, IP.getBlock());
   };
-  OMPBuilder.pushFinalizationCB({FiniCB, OMPD_parallel, true});
+  OMPBuilder.pushFinalizationCB({FINICB_WRAPPER(FiniCB), OMPD_parallel, true});
 
   IRBuilder<> Builder(BB);
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP()});
-  auto NewIP = OMPBuilder.createBarrier(Loc, OMPD_for);
-  Builder.restoreIP(NewIP);
+  OpenMPIRBuilder::InsertPointOrErrorTy NewIP =
+      OMPBuilder.createBarrier(Loc, OMPD_for);
+  assert(NewIP && "unexpected error");
+  Builder.restoreIP(*NewIP);
   EXPECT_FALSE(M->global_empty());
   EXPECT_EQ(M->size(), 3U);
   EXPECT_EQ(F->size(), 4U);
@@ -541,7 +568,7 @@ TEST_F(OpenMPIRBuilderTest, CreateCancelBarrier) {
   EXPECT_EQ(Barrier->getNumUses(), 1U);
   Instruction *BarrierBBTI = Barrier->getParent()->getTerminator();
   EXPECT_EQ(BarrierBBTI->getNumSuccessors(), 2U);
-  EXPECT_EQ(BarrierBBTI->getSuccessor(0), NewIP.getBlock());
+  EXPECT_EQ(BarrierBBTI->getSuccessor(0), NewIP->getBlock());
   EXPECT_EQ(BarrierBBTI->getSuccessor(1)->size(), 1U);
   EXPECT_EQ(BarrierBBTI->getSuccessor(1)->getTerminator()->getNumSuccessors(),
             1U);
@@ -564,7 +591,9 @@ TEST_F(OpenMPIRBuilderTest, DbgLoc) {
   IRBuilder<> Builder(BB);
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
-  OMPBuilder.createBarrier(Loc, OMPD_for);
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createBarrier(Loc, OMPD_for);
+  assert(AfterIP && "unexpected error");
   CallInst *GTID = dyn_cast<CallInst>(&BB->front());
   CallInst *Barrier = dyn_cast<CallInst>(GTID->getNextNode());
   EXPECT_EQ(GTID->getDebugLoc(), DL);
@@ -591,9 +620,127 @@ TEST_F(OpenMPIRBuilderTest, DbgLoc) {
   EXPECT_EQ(SrcSrc->getAsCString(), ";/src/test.dbg;foo;3;7;;");
 }
 
+TEST_F(OpenMPIRBuilderTest, ParallelSimpleGPU) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  std::string oldDLStr = M->getDataLayoutStr();
+  M->setDataLayout(
+      "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-p7:160:"
+      "256:256:32-p8:128:128-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:"
+      "256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8");
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = true;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> Builder(BB);
+  BasicBlock *EnterBB = BasicBlock::Create(Ctx, "parallel.enter", F);
+  Builder.CreateBr(EnterBB);
+  Builder.SetInsertPoint(EnterBB);
+  OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
+
+  AllocaInst *PrivAI = nullptr;
+
+  unsigned NumBodiesGenerated = 0;
+  unsigned NumPrivatizedVars = 0;
+  unsigned NumFinalizationPoints = 0;
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    ++NumBodiesGenerated;
+
+    Builder.restoreIP(AllocaIP);
+    PrivAI = Builder.CreateAlloca(F->arg_begin()->getType());
+    Builder.CreateStore(F->arg_begin(), PrivAI);
+
+    Builder.restoreIP(CodeGenIP);
+    Value *PrivLoad =
+        Builder.CreateLoad(PrivAI->getAllocatedType(), PrivAI, "local.use");
+    Value *Cmp = Builder.CreateICmpNE(F->arg_begin(), PrivLoad);
+    Instruction *ThenTerm, *ElseTerm;
+    SplitBlockAndInsertIfThenElse(Cmp, CodeGenIP.getBlock()->getTerminator(),
+                                  &ThenTerm, &ElseTerm);
+    return Error::success();
+  };
+
+  auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
+                    Value &Orig, Value &Inner,
+                    Value *&ReplacementValue) -> InsertPointTy {
+    ++NumPrivatizedVars;
+
+    if (!isa<AllocaInst>(Orig)) {
+      EXPECT_EQ(&Orig, F->arg_begin());
+      ReplacementValue = &Inner;
+      return CodeGenIP;
+    }
+
+    // Since the original value is an allocation, it has a pointer type and
+    // therefore no additional wrapping should happen.
+    EXPECT_EQ(&Orig, &Inner);
+
+    // Trivial copy (=firstprivate).
+    Builder.restoreIP(AllocaIP);
+    Type *VTy = ReplacementValue->getType();
+    Value *V = Builder.CreateLoad(VTy, &Inner, Orig.getName() + ".reload");
+    ReplacementValue = Builder.CreateAlloca(VTy, 0, Orig.getName() + ".copy");
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateStore(V, ReplacementValue);
+    return CodeGenIP;
+  };
+
+  auto FiniCB = [&](InsertPointTy CodeGenIP) {
+    ++NumFinalizationPoints;
+    return Error::success();
+  };
+
+  IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
+                                    F->getEntryBlock().getFirstInsertionPt());
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createParallel(Loc, AllocaIP, BodyGenCB, PrivCB, FiniCB,
+                                nullptr, nullptr, OMP_PROC_BIND_default, false);
+  assert(AfterIP && "unexpected error");
+
+  EXPECT_EQ(NumBodiesGenerated, 1U);
+  EXPECT_EQ(NumPrivatizedVars, 1U);
+  EXPECT_EQ(NumFinalizationPoints, 1U);
+
+  Builder.restoreIP(*AfterIP);
+  Builder.CreateRetVoid();
+
+  OMPBuilder.finalize();
+  Function *OutlinedFn = PrivAI->getFunction();
+  EXPECT_FALSE(verifyModule(*M, &errs()));
+  EXPECT_NE(OutlinedFn, F);
+  EXPECT_TRUE(OutlinedFn->hasFnAttribute(Attribute::NoUnwind));
+  EXPECT_TRUE(OutlinedFn->hasParamAttribute(0, Attribute::NoAlias));
+  EXPECT_TRUE(OutlinedFn->hasParamAttribute(1, Attribute::NoAlias));
+
+  EXPECT_TRUE(OutlinedFn->hasInternalLinkage());
+  EXPECT_EQ(OutlinedFn->arg_size(), 3U);
+  // Make sure that arguments are pointers in 0 address address space
+  EXPECT_EQ(OutlinedFn->getArg(0)->getType(),
+            PointerType::get(M->getContext(), 0));
+  EXPECT_EQ(OutlinedFn->getArg(1)->getType(),
+            PointerType::get(M->getContext(), 0));
+  EXPECT_EQ(OutlinedFn->getArg(2)->getType(),
+            PointerType::get(M->getContext(), 0));
+  EXPECT_EQ(&OutlinedFn->getEntryBlock(), PrivAI->getParent());
+  EXPECT_EQ(OutlinedFn->getNumUses(), 1U);
+  User *Usr = OutlinedFn->user_back();
+  ASSERT_TRUE(isa<CallInst>(Usr));
+  CallInst *Parallel51CI = dyn_cast<CallInst>(Usr);
+  ASSERT_NE(Parallel51CI, nullptr);
+
+  EXPECT_EQ(Parallel51CI->getCalledFunction()->getName(), "__kmpc_parallel_51");
+  EXPECT_EQ(Parallel51CI->arg_size(), 9U);
+  EXPECT_EQ(Parallel51CI->getArgOperand(5), OutlinedFn);
+  EXPECT_TRUE(
+      isa<GlobalVariable>(Parallel51CI->getArgOperand(0)->stripPointerCasts()));
+  EXPECT_EQ(Parallel51CI, Usr);
+  M->setDataLayout(oldDLStr);
+}
+
 TEST_F(OpenMPIRBuilderTest, ParallelSimple) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -623,6 +770,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelSimple) {
     Instruction *ThenTerm, *ElseTerm;
     SplitBlockAndInsertIfThenElse(Cmp, CodeGenIP.getBlock()->getTerminator(),
                                   &ThenTerm, &ElseTerm);
+    return Error::success();
   };
 
   auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -650,18 +798,22 @@ TEST_F(OpenMPIRBuilderTest, ParallelSimple) {
     return CodeGenIP;
   };
 
-  auto FiniCB = [&](InsertPointTy CodeGenIP) { ++NumFinalizationPoints; };
+  auto FiniCB = [&](InsertPointTy CodeGenIP) {
+    ++NumFinalizationPoints;
+    return Error::success();
+  };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, AllocaIP, BodyGenCB, PrivCB, FiniCB,
                                 nullptr, nullptr, OMP_PROC_BIND_default, false);
+  assert(AfterIP && "unexpected error");
   EXPECT_EQ(NumBodiesGenerated, 1U);
   EXPECT_EQ(NumPrivatizedVars, 1U);
   EXPECT_EQ(NumFinalizationPoints, 1U);
 
-  Builder.restoreIP(AfterIP);
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize();
@@ -671,7 +823,6 @@ TEST_F(OpenMPIRBuilderTest, ParallelSimple) {
   EXPECT_NE(F, OutlinedFn);
   EXPECT_FALSE(verifyModule(*M, &errs()));
   EXPECT_TRUE(OutlinedFn->hasFnAttribute(Attribute::NoUnwind));
-  EXPECT_TRUE(OutlinedFn->hasFnAttribute(Attribute::NoRecurse));
   EXPECT_TRUE(OutlinedFn->hasParamAttribute(0, Attribute::NoAlias));
   EXPECT_TRUE(OutlinedFn->hasParamAttribute(1, Attribute::NoAlias));
 
@@ -699,6 +850,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelSimple) {
 TEST_F(OpenMPIRBuilderTest, ParallelNested) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -714,6 +866,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested) {
 
   auto InnerBodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
     ++NumInnerBodiesGenerated;
+    return Error::success();
   };
 
   auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -729,7 +882,10 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested) {
     return CodeGenIP;
   };
 
-  auto FiniCB = [&](InsertPointTy CodeGenIP) { ++NumFinalizationPoints; };
+  auto FiniCB = [&](InsertPointTy CodeGenIP) {
+    ++NumFinalizationPoints;
+    return Error::success();
+  };
 
   auto OuterBodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
     ++NumOuterBodiesGenerated;
@@ -737,27 +893,29 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested) {
     BasicBlock *CGBB = CodeGenIP.getBlock();
     BasicBlock *NewBB = SplitBlock(CGBB, &*CodeGenIP.getPoint());
     CGBB->getTerminator()->eraseFromParent();
-    ;
 
-    IRBuilder<>::InsertPoint AfterIP = OMPBuilder.createParallel(
+    OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createParallel(
         InsertPointTy(CGBB, CGBB->end()), AllocaIP, InnerBodyGenCB, PrivCB,
         FiniCB, nullptr, nullptr, OMP_PROC_BIND_default, false);
+    assert(AfterIP && "unexpected error");
 
-    Builder.restoreIP(AfterIP);
+    Builder.restoreIP(*AfterIP);
     Builder.CreateBr(NewBB);
+    return Error::success();
   };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, AllocaIP, OuterBodyGenCB, PrivCB, FiniCB,
                                 nullptr, nullptr, OMP_PROC_BIND_default, false);
+  assert(AfterIP && "unexpected error");
 
   EXPECT_EQ(NumInnerBodiesGenerated, 1U);
   EXPECT_EQ(NumOuterBodiesGenerated, 1U);
   EXPECT_EQ(NumFinalizationPoints, 2U);
 
-  Builder.restoreIP(AfterIP);
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize();
@@ -768,7 +926,6 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested) {
       continue;
     EXPECT_FALSE(verifyModule(*M, &errs()));
     EXPECT_TRUE(OutlinedFn.hasFnAttribute(Attribute::NoUnwind));
-    EXPECT_TRUE(OutlinedFn.hasFnAttribute(Attribute::NoRecurse));
     EXPECT_TRUE(OutlinedFn.hasParamAttribute(0, Attribute::NoAlias));
     EXPECT_TRUE(OutlinedFn.hasParamAttribute(1, Attribute::NoAlias));
 
@@ -793,6 +950,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested) {
 TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -808,6 +966,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
 
   auto InnerBodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
     ++NumInnerBodiesGenerated;
+    return Error::success();
   };
 
   auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -823,7 +982,10 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
     return CodeGenIP;
   };
 
-  auto FiniCB = [&](InsertPointTy CodeGenIP) { ++NumFinalizationPoints; };
+  auto FiniCB = [&](InsertPointTy CodeGenIP) {
+    ++NumFinalizationPoints;
+    return Error::success();
+  };
 
   auto OuterBodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
     ++NumOuterBodiesGenerated;
@@ -836,32 +998,36 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
     NewBB1->getTerminator()->eraseFromParent();
     ;
 
-    IRBuilder<>::InsertPoint AfterIP1 = OMPBuilder.createParallel(
+    OpenMPIRBuilder::InsertPointOrErrorTy AfterIP1 = OMPBuilder.createParallel(
         InsertPointTy(CGBB, CGBB->end()), AllocaIP, InnerBodyGenCB, PrivCB,
         FiniCB, nullptr, nullptr, OMP_PROC_BIND_default, false);
+    assert(AfterIP1 && "unexpected error");
 
-    Builder.restoreIP(AfterIP1);
+    Builder.restoreIP(*AfterIP1);
     Builder.CreateBr(NewBB1);
 
-    IRBuilder<>::InsertPoint AfterIP2 = OMPBuilder.createParallel(
+    OpenMPIRBuilder::InsertPointOrErrorTy AfterIP2 = OMPBuilder.createParallel(
         InsertPointTy(NewBB1, NewBB1->end()), AllocaIP, InnerBodyGenCB, PrivCB,
         FiniCB, nullptr, nullptr, OMP_PROC_BIND_default, false);
+    assert(AfterIP2 && "unexpected error");
 
-    Builder.restoreIP(AfterIP2);
+    Builder.restoreIP(*AfterIP2);
     Builder.CreateBr(NewBB2);
+    return Error::success();
   };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, AllocaIP, OuterBodyGenCB, PrivCB, FiniCB,
                                 nullptr, nullptr, OMP_PROC_BIND_default, false);
+  assert(AfterIP && "unexpected error");
 
   EXPECT_EQ(NumInnerBodiesGenerated, 2U);
   EXPECT_EQ(NumOuterBodiesGenerated, 1U);
   EXPECT_EQ(NumFinalizationPoints, 3U);
 
-  Builder.restoreIP(AfterIP);
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize();
@@ -872,7 +1038,6 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
       continue;
     EXPECT_FALSE(verifyModule(*M, &errs()));
     EXPECT_TRUE(OutlinedFn.hasFnAttribute(Attribute::NoUnwind));
-    EXPECT_TRUE(OutlinedFn.hasFnAttribute(Attribute::NoRecurse));
     EXPECT_TRUE(OutlinedFn.hasParamAttribute(0, Attribute::NoAlias));
     EXPECT_TRUE(OutlinedFn.hasParamAttribute(1, Attribute::NoAlias));
 
@@ -902,6 +1067,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelNested2Inner) {
 TEST_F(OpenMPIRBuilderTest, ParallelIfCond) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -931,6 +1097,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelIfCond) {
     Instruction *ThenTerm, *ElseTerm;
     SplitBlockAndInsertIfThenElse(Cmp, &*Builder.GetInsertPoint(), &ThenTerm,
                                   &ElseTerm);
+    return Error::success();
   };
 
   auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -961,20 +1128,22 @@ TEST_F(OpenMPIRBuilderTest, ParallelIfCond) {
   auto FiniCB = [&](InsertPointTy CodeGenIP) {
     ++NumFinalizationPoints;
     // No destructors.
+    return Error::success();
   };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, AllocaIP, BodyGenCB, PrivCB, FiniCB,
                                 Builder.CreateIsNotNull(F->arg_begin()),
                                 nullptr, OMP_PROC_BIND_default, false);
+  assert(AfterIP && "unexpected error");
 
   EXPECT_EQ(NumBodiesGenerated, 1U);
   EXPECT_EQ(NumPrivatizedVars, 1U);
   EXPECT_EQ(NumFinalizationPoints, 1U);
 
-  Builder.restoreIP(AfterIP);
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
 
@@ -1006,6 +1175,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelIfCond) {
 TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -1028,8 +1198,10 @@ TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
     // Create three barriers, two cancel barriers but only one checked.
     Function *CBFn, *BFn;
 
-    Builder.restoreIP(
-        OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel));
+    OpenMPIRBuilder::InsertPointOrErrorTy BarrierIP1 =
+        OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel);
+    assert(BarrierIP1 && "unexpected error");
+    Builder.restoreIP(*BarrierIP1);
 
     CBFn = M->getFunction("__kmpc_cancel_barrier");
     BFn = M->getFunction("__kmpc_barrier");
@@ -1040,8 +1212,10 @@ TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
     ASSERT_EQ(CBFn->user_back()->getNumUses(), 1U);
     CheckedBarrier = cast<CallInst>(CBFn->user_back());
 
-    Builder.restoreIP(
-        OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel, true));
+    OpenMPIRBuilder::InsertPointOrErrorTy BarrierIP2 =
+        OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel, true);
+    assert(BarrierIP2 && "unexpected error");
+    Builder.restoreIP(*BarrierIP2);
     CBFn = M->getFunction("__kmpc_cancel_barrier");
     BFn = M->getFunction("__kmpc_barrier");
     ASSERT_NE(CBFn, nullptr);
@@ -1051,8 +1225,10 @@ TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
     ASSERT_TRUE(isa<CallInst>(BFn->user_back()));
     ASSERT_EQ(BFn->user_back()->getNumUses(), 0U);
 
-    Builder.restoreIP(OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel,
-                                               false, false));
+    OpenMPIRBuilder::InsertPointOrErrorTy BarrierIP3 =
+        OMPBuilder.createBarrier(Builder.saveIP(), OMPD_parallel, false, false);
+    assert(BarrierIP3 && "unexpected error");
+    Builder.restoreIP(*BarrierIP3);
     ASSERT_EQ(CBFn->getNumUses(), 2U);
     ASSERT_EQ(BFn->getNumUses(), 1U);
     ASSERT_TRUE(CBFn->user_back() != CheckedBarrier);
@@ -1077,21 +1253,23 @@ TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
     Builder.restoreIP(IP);
     Builder.CreateCall(FakeDestructor,
                        {Builder.getInt32(NumFinalizationPoints)});
+    return Error::success();
   };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
-      OMPBuilder.createParallel(Loc, AllocaIP, BodyGenCB, PrivCB, FiniCB,
-                                Builder.CreateIsNotNull(F->arg_begin()),
-                                nullptr, OMP_PROC_BIND_default, true);
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createParallel(
+      Loc, AllocaIP, BODYGENCB_WRAPPER(BodyGenCB), PrivCB, FiniCB,
+      Builder.CreateIsNotNull(F->arg_begin()), nullptr, OMP_PROC_BIND_default,
+      true);
+  assert(AfterIP && "unexpected error");
 
   EXPECT_EQ(NumBodiesGenerated, 1U);
   EXPECT_EQ(NumPrivatizedVars, 0U);
   EXPECT_EQ(NumFinalizationPoints, 2U);
   EXPECT_EQ(FakeDestructor->getNumUses(), 2U);
 
-  Builder.restoreIP(AfterIP);
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
 
@@ -1119,6 +1297,7 @@ TEST_F(OpenMPIRBuilderTest, ParallelCancelBarrier) {
 
 TEST_F(OpenMPIRBuilderTest, ParallelForwardAsPointers) {
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -1155,20 +1334,22 @@ TEST_F(OpenMPIRBuilderTest, ParallelForwardAsPointers) {
     Builder.CreateCall(TakeI32PtrFunc, I32PtrVal);
     Builder.CreateCall(TakeStructFunc, StructVal);
     Builder.CreateCall(TakeStructPtrFunc, StructPtrVal);
+    return Error::success();
   };
   auto PrivCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP, Value &,
                     Value &Inner, Value *&ReplacementValue) {
     ReplacementValue = &Inner;
     return CodeGenIP;
   };
-  auto FiniCB = [](InsertPointTy) {};
+  auto FiniCB = [](InsertPointTy) { return Error::success(); };
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  IRBuilder<>::InsertPoint AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, AllocaIP, BodyGenCB, PrivCB, FiniCB,
                                 nullptr, nullptr, OMP_PROC_BIND_default, false);
-  Builder.restoreIP(AfterIP);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize();
@@ -1198,10 +1379,13 @@ TEST_F(OpenMPIRBuilderTest, CanonicalLoopSimple) {
     Instruction *ThenTerm, *ElseTerm;
     SplitBlockAndInsertIfThenElse(Cmp, CodeGenIP.getBlock()->getTerminator(),
                                   &ThenTerm, &ElseTerm);
+    return Error::success();
   };
 
-  CanonicalLoopInfo *Loop =
+  Expected<CanonicalLoopInfo *> LoopResult =
       OMPBuilder.createCanonicalLoop(Loc, LoopBodyGenCB, TripCount);
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *Loop = *LoopResult;
 
   Builder.restoreIP(Loop->getAfterIP());
   ReturnInst *RetInst = Builder.CreateRetVoid();
@@ -1253,10 +1437,14 @@ TEST_F(OpenMPIRBuilderTest, CanonicalLoopBounds) {
     Value *StartVal = ConstantInt::get(LCTy, Start);
     Value *StopVal = ConstantInt::get(LCTy, Stop);
     Value *StepVal = ConstantInt::get(LCTy, Step);
-    auto LoopBodyGenCB = [&](InsertPointTy CodeGenIP, llvm::Value *LC) {};
-    CanonicalLoopInfo *Loop =
+    auto LoopBodyGenCB = [&](InsertPointTy CodeGenIP, llvm::Value *LC) {
+      return Error::success();
+    };
+    Expected<CanonicalLoopInfo *> LoopResult =
         OMPBuilder.createCanonicalLoop(Loc, LoopBodyGenCB, StartVal, StopVal,
                                        StepVal, IsSigned, InclusiveStop);
+    assert(LoopResult && "unexpected error");
+    CanonicalLoopInfo *Loop = *LoopResult;
     Loop->assertOK();
     Builder.restoreIP(Loop->getAfterIP());
     Value *TripCount = Loop->getTripCount();
@@ -1349,16 +1537,22 @@ TEST_F(OpenMPIRBuilderTest, CollapseNestedLoops) {
                                   Value *InnerLC) {
       Builder.restoreIP(InnerCodeGenIP);
       Call = createPrintfCall(Builder, "body i=%d j=%d\\n", {OuterLC, InnerLC});
+      return Error::success();
     };
-    InnerLoop = OMPBuilder.createCanonicalLoop(
+    Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
         Builder.saveIP(), InnerLoopBodyGenCB, InnerTripCount, "inner");
+    assert(LoopResult && "unexpected error");
+    InnerLoop = *LoopResult;
 
     Builder.restoreIP(InnerLoop->getAfterIP());
     InbetweenTrail =
         createPrintfCall(Builder, "In-between trail i=%d\\n", {OuterLC});
+    return Error::success();
   };
-  CanonicalLoopInfo *OuterLoop = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       OuterLoc, OuterLoopBodyGenCB, OuterTripCount, "outer");
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *OuterLoop = *LoopResult;
 
   // Finish the function.
   Builder.restoreIP(OuterLoop->getAfterIP());
@@ -1468,12 +1662,18 @@ TEST_F(OpenMPIRBuilderTest, TileNestedLoops) {
 
       // Add something that consumes the induction variables to the body.
       createPrintfCall(Builder, "i=%d j=%d\\n", {OuterLC, InnerLC});
+      return Error::success();
     };
-    InnerLoop = OMPBuilder.createCanonicalLoop(
+    Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
         OuterCodeGenIP, InnerLoopBodyGenCB, TripCount, "inner");
+    assert(LoopResult && "unexpected error");
+    InnerLoop = *LoopResult;
+    return Error::success();
   };
-  CanonicalLoopInfo *OuterLoop = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       Loc, OuterLoopBodyGenCB, TripCount, "outer");
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *OuterLoop = *LoopResult;
 
   // Finalize the function.
   Builder.restoreIP(OuterLoop->getAfterIP());
@@ -1568,14 +1768,20 @@ TEST_F(OpenMPIRBuilderTest, TileNestedLoopsWithBounds) {
 
       // Add something that consumes the induction variable to the body.
       Call = createPrintfCall(Builder, "i=%d j=%d\\n", {OuterLC, InnerLC});
+      return Error::success();
     };
-    InnerLoop = OMPBuilder.createCanonicalLoop(
+    Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
         OuterCodeGenIP, InnerLoopBodyGenCB, InnerStartVal, InnerStopVal,
         InnerStep, false, false, ComputeIP, "inner");
+    assert(LoopResult && "unexpected error");
+    InnerLoop = *LoopResult;
+    return Error::success();
   };
-  CanonicalLoopInfo *OuterLoop = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       Loc, OuterLoopBodyGenCB, OuterStartVal, OuterStopVal, OuterStep, false,
       false, ComputeIP, "outer");
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *OuterLoop = *LoopResult;
 
   // Finalize the function
   Builder.restoreIP(OuterLoop->getAfterIP());
@@ -1679,10 +1885,14 @@ TEST_F(OpenMPIRBuilderTest, TileSingleLoopCounts) {
     Value *StepVal = ConstantInt::get(LCTy, Step);
 
     // Generate a loop.
-    auto LoopBodyGenCB = [&](InsertPointTy CodeGenIP, llvm::Value *LC) {};
-    CanonicalLoopInfo *Loop =
+    auto LoopBodyGenCB = [&](InsertPointTy CodeGenIP, llvm::Value *LC) {
+      return Error::success();
+    };
+    Expected<CanonicalLoopInfo *> LoopResult =
         OMPBuilder.createCanonicalLoop(Loc, LoopBodyGenCB, StartVal, StopVal,
                                        StepVal, IsSigned, InclusiveStop);
+    assert(LoopResult && "unexpected error");
+    CanonicalLoopInfo *Loop = *LoopResult;
     InsertPointTy AfterIP = Loop->getAfterIP();
 
     // Tile the loop.
@@ -1784,7 +1994,7 @@ TEST_F(OpenMPIRBuilderTest, ApplySimdCustomAligned) {
   IRBuilder<> Builder(BB);
   const int AlignmentValue = 32;
   AllocaInst *Alloc1 =
-      Builder.CreateAlloca(Builder.getInt8PtrTy(), Builder.getInt64(1));
+      Builder.CreateAlloca(Builder.getPtrTy(), Builder.getInt64(1));
   LoadInst *Load1 = Builder.CreateLoad(Alloc1->getAllocatedType(), Alloc1);
   MapVector<Value *, Value *> AlignedVars;
   AlignedVars.insert({Load1, Builder.getInt64(AlignmentValue)});
@@ -1982,7 +2192,7 @@ TEST_F(OpenMPIRBuilderTest, ApplySimdlenSafelen) {
   }));
 }
 
-TEST_F(OpenMPIRBuilderTest, ApplySimdLoopIf) {
+TEST_F(OpenMPIRBuilderTest, ApplySimdIf) {
   OpenMPIRBuilder OMPBuilder(*M);
   IRBuilder<> Builder(BB);
   MapVector<Value *, Value *> AlignedVars;
@@ -2113,9 +2323,80 @@ TEST_F(OpenMPIRBuilderTest, UnrollLoopHeuristic) {
   EXPECT_TRUE(getBooleanLoopAttribute(L, "llvm.loop.unroll.enable"));
 }
 
+TEST_F(OpenMPIRBuilderTest, StaticWorkshareLoopTarget) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  std::string oldDLStr = M->getDataLayoutStr();
+  M->setDataLayout(
+      "e-p:64:64-p1:64:64-p2:32:32-p3:32:32-p4:64:64-p5:32:32-p6:32:32-p7:160:"
+      "256:256:32-p8:128:128-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:"
+      "256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-S32-A5-G1-ni:7:8");
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = true;
+  OMPBuilder.initialize();
+  IRBuilder<> Builder(BB);
+  OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
+  InsertPointTy AllocaIP = Builder.saveIP();
+
+  Type *LCTy = Type::getInt32Ty(Ctx);
+  Value *StartVal = ConstantInt::get(LCTy, 10);
+  Value *StopVal = ConstantInt::get(LCTy, 52);
+  Value *StepVal = ConstantInt::get(LCTy, 2);
+  auto LoopBodyGen = [&](InsertPointTy, Value *) { return Error::success(); };
+
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
+      Loc, LoopBodyGen, StartVal, StopVal, StepVal, false, false);
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *CLI = *LoopResult;
+  BasicBlock *Preheader = CLI->getPreheader();
+  Value *TripCount = CLI->getTripCount();
+
+  Builder.SetInsertPoint(BB, BB->getFirstInsertionPt());
+
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.applyWorkshareLoop(
+      DL, CLI, AllocaIP, true, OMP_SCHEDULE_Static, nullptr, false, false,
+      false, false, WorksharingLoopType::ForStaticLoop);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+  Builder.CreateRetVoid();
+
+  OMPBuilder.finalize();
+  EXPECT_FALSE(verifyModule(*M, &errs()));
+
+  CallInst *WorkshareLoopRuntimeCall = nullptr;
+  int WorkshareLoopRuntimeCallCnt = 0;
+  for (auto Inst = Preheader->begin(); Inst != Preheader->end(); ++Inst) {
+    CallInst *Call = dyn_cast<CallInst>(Inst);
+    if (!Call)
+      continue;
+    if (!Call->getCalledFunction())
+      continue;
+
+    if (Call->getCalledFunction()->getName() == "__kmpc_for_static_loop_4u") {
+      WorkshareLoopRuntimeCall = Call;
+      WorkshareLoopRuntimeCallCnt++;
+    }
+  }
+  EXPECT_NE(WorkshareLoopRuntimeCall, nullptr);
+  // Verify that there is only one call to workshare loop function
+  EXPECT_EQ(WorkshareLoopRuntimeCallCnt, 1);
+  // Check that pointer to loop body function is passed as second argument
+  Value *LoopBodyFuncArg = WorkshareLoopRuntimeCall->getArgOperand(1);
+  EXPECT_EQ(Builder.getPtrTy(), LoopBodyFuncArg->getType());
+  Function *ArgFunction = dyn_cast<Function>(LoopBodyFuncArg);
+  EXPECT_NE(ArgFunction, nullptr);
+  EXPECT_EQ(ArgFunction->arg_size(), 1u);
+  EXPECT_EQ(ArgFunction->getArg(0)->getType(), TripCount->getType());
+  // Check that no variables except for loop counter are used in loop body
+  EXPECT_EQ(Constant::getNullValue(Builder.getPtrTy()),
+            WorkshareLoopRuntimeCall->getArgOperand(2));
+  // Check loop trip count argument
+  EXPECT_EQ(TripCount, WorkshareLoopRuntimeCall->getArgOperand(3));
+}
+
 TEST_F(OpenMPIRBuilderTest, StaticWorkShareLoop) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   IRBuilder<> Builder(BB);
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
@@ -2124,11 +2405,15 @@ TEST_F(OpenMPIRBuilderTest, StaticWorkShareLoop) {
   Value *StartVal = ConstantInt::get(LCTy, 10);
   Value *StopVal = ConstantInt::get(LCTy, 52);
   Value *StepVal = ConstantInt::get(LCTy, 2);
-  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {};
+  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {
+    return Error::success();
+  };
 
-  CanonicalLoopInfo *CLI = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       Loc, LoopBodyGen, StartVal, StopVal, StepVal,
       /*IsSigned=*/false, /*InclusiveStop=*/false);
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *CLI = *LoopResult;
   BasicBlock *Preheader = CLI->getPreheader();
   BasicBlock *Body = CLI->getBody();
   Value *IV = CLI->getIndVar();
@@ -2137,8 +2422,9 @@ TEST_F(OpenMPIRBuilderTest, StaticWorkShareLoop) {
   Builder.SetInsertPoint(BB, BB->getFirstInsertionPt());
   InsertPointTy AllocaIP = Builder.saveIP();
 
-  OMPBuilder.applyWorkshareLoop(DL, CLI, AllocaIP, /*NeedsBarrier=*/true,
-                                OMP_SCHEDULE_Static);
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.applyWorkshareLoop(
+      DL, CLI, AllocaIP, /*NeedsBarrier=*/true, OMP_SCHEDULE_Static);
+  assert(AfterIP && "unexpected error");
 
   BasicBlock *Cond = Body->getSinglePredecessor();
   Instruction *Cmp = &*Cond->begin();
@@ -2216,6 +2502,7 @@ TEST_P(OpenMPIRBuilderTestWithIVBits, StaticChunkedWorkshareLoop) {
 
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
 
   BasicBlock *Body;
   CallInst *Call;
@@ -2229,8 +2516,9 @@ TEST_P(OpenMPIRBuilderTestWithIVBits, StaticChunkedWorkshareLoop) {
   Value *ChunkSize = ConstantInt::get(LCTy, 5);
   InsertPointTy AllocaIP{&F->getEntryBlock(),
                          F->getEntryBlock().getFirstInsertionPt()};
-  OMPBuilder.applyWorkshareLoop(DL, CLI, AllocaIP, /*NeedsBarrier=*/true,
-                                OMP_SCHEDULE_Static, ChunkSize);
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.applyWorkshareLoop(
+      DL, CLI, AllocaIP, /*NeedsBarrier=*/true, OMP_SCHEDULE_Static, ChunkSize);
+  assert(AfterIP && "unexpected error");
 
   OMPBuilder.finalize();
   EXPECT_FALSE(verifyModule(*M, &errs()));
@@ -2290,6 +2578,7 @@ INSTANTIATE_TEST_SUITE_P(IVBits, OpenMPIRBuilderTestWithIVBits,
 TEST_P(OpenMPIRBuilderTestWithParams, DynamicWorkShareLoop) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   IRBuilder<> Builder(BB);
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
@@ -2316,11 +2605,15 @@ TEST_P(OpenMPIRBuilderTestWithParams, DynamicWorkShareLoop) {
   Value *StepVal = ConstantInt::get(LCTy, 2);
   Value *ChunkVal =
       (ChunkSize == 1) ? nullptr : ConstantInt::get(LCTy, ChunkSize);
-  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {};
+  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {
+    return Error::success();
+  };
 
-  CanonicalLoopInfo *CLI = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       Loc, LoopBodyGen, StartVal, StopVal, StepVal,
       /*IsSigned=*/false, /*InclusiveStop=*/false);
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *CLI = *LoopResult;
 
   Builder.SetInsertPoint(BB, BB->getFirstInsertionPt());
   InsertPointTy AllocaIP = Builder.saveIP();
@@ -2333,7 +2626,7 @@ TEST_P(OpenMPIRBuilderTestWithParams, DynamicWorkShareLoop) {
   BasicBlock *LatchBlock = CLI->getLatch();
   Value *IV = CLI->getIndVar();
 
-  InsertPointTy EndIP = OMPBuilder.applyWorkshareLoop(
+  OpenMPIRBuilder::InsertPointOrErrorTy EndIP = OMPBuilder.applyWorkshareLoop(
       DL, CLI, AllocaIP, /*NeedsBarrier=*/true, getSchedKind(SchedType),
       ChunkVal, /*Simd=*/false,
       (SchedType & omp::OMPScheduleType::ModifierMonotonic) ==
@@ -2341,10 +2634,11 @@ TEST_P(OpenMPIRBuilderTestWithParams, DynamicWorkShareLoop) {
       (SchedType & omp::OMPScheduleType::ModifierNonmonotonic) ==
           omp::OMPScheduleType::ModifierNonmonotonic,
       /*Ordered=*/false);
+  assert(EndIP && "unexpected error");
 
   // The returned value should be the "after" point.
-  ASSERT_EQ(EndIP.getBlock(), AfterIP.getBlock());
-  ASSERT_EQ(EndIP.getPoint(), AfterIP.getPoint());
+  ASSERT_EQ(EndIP->getBlock(), AfterIP.getBlock());
+  ASSERT_EQ(EndIP->getPoint(), AfterIP.getPoint());
 
   auto AllocaIter = BB->begin();
   ASSERT_GE(std::distance(BB->begin(), BB->end()), 4);
@@ -2419,7 +2713,7 @@ TEST_P(OpenMPIRBuilderTestWithParams, DynamicWorkShareLoop) {
   EXPECT_EQ(NumCallsInExitBlock, 2u);
 
   // Add a termination to our block and check that it is internally consistent.
-  Builder.restoreIP(EndIP);
+  Builder.restoreIP(*EndIP);
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
   EXPECT_FALSE(verifyModule(*M, &errs()));
@@ -2447,6 +2741,7 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_F(OpenMPIRBuilderTest, DynamicWorkShareLoopOrdered) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   IRBuilder<> Builder(BB);
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
@@ -2457,11 +2752,15 @@ TEST_F(OpenMPIRBuilderTest, DynamicWorkShareLoopOrdered) {
   Value *StopVal = ConstantInt::get(LCTy, 52);
   Value *StepVal = ConstantInt::get(LCTy, 2);
   Value *ChunkVal = ConstantInt::get(LCTy, ChunkSize);
-  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {};
+  auto LoopBodyGen = [&](InsertPointTy, llvm::Value *) {
+    return llvm::Error::success();
+  };
 
-  CanonicalLoopInfo *CLI = OMPBuilder.createCanonicalLoop(
+  Expected<CanonicalLoopInfo *> LoopResult = OMPBuilder.createCanonicalLoop(
       Loc, LoopBodyGen, StartVal, StopVal, StepVal,
       /*IsSigned=*/false, /*InclusiveStop=*/false);
+  assert(LoopResult && "unexpected error");
+  CanonicalLoopInfo *CLI = *LoopResult;
 
   Builder.SetInsertPoint(BB, BB->getFirstInsertionPt());
   InsertPointTy AllocaIP = Builder.saveIP();
@@ -2473,14 +2772,15 @@ TEST_F(OpenMPIRBuilderTest, DynamicWorkShareLoopOrdered) {
   BasicBlock *LatchBlock = CLI->getLatch();
   Value *IV = CLI->getIndVar();
 
-  InsertPointTy EndIP = OMPBuilder.applyWorkshareLoop(
+  OpenMPIRBuilder::InsertPointOrErrorTy EndIP = OMPBuilder.applyWorkshareLoop(
       DL, CLI, AllocaIP, /*NeedsBarrier=*/true, OMP_SCHEDULE_Static, ChunkVal,
       /*HasSimdModifier=*/false, /*HasMonotonicModifier=*/false,
       /*HasNonmonotonicModifier=*/false,
       /*HasOrderedClause=*/true);
+  assert(EndIP && "unexpected error");
 
   // Add a termination to our block and check that it is internally consistent.
-  Builder.restoreIP(EndIP);
+  Builder.restoreIP(*EndIP);
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
   EXPECT_FALSE(verifyModule(*M, &errs()));
@@ -2564,7 +2864,10 @@ TEST_F(OpenMPIRBuilderTest, MasterDirective) {
     EXPECT_NE(IPBB->end(), IP.getPoint());
   };
 
-  Builder.restoreIP(OMPBuilder.createMaster(Builder, BodyGenCB, FiniCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createMaster(
+      Builder, BODYGENCB_WRAPPER(BodyGenCB), FINICB_WRAPPER(FiniCB));
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Value *EntryBBTI = EntryBB->getTerminator();
   EXPECT_NE(EntryBBTI, nullptr);
   EXPECT_TRUE(isa<BranchInst>(EntryBBTI));
@@ -2642,8 +2945,10 @@ TEST_F(OpenMPIRBuilderTest, MaskedDirective) {
   };
 
   Constant *Filter = ConstantInt::get(Type::getInt32Ty(M->getContext()), 0);
-  Builder.restoreIP(
-      OMPBuilder.createMasked(Builder, BodyGenCB, FiniCB, Filter));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createMasked(
+      Builder, BODYGENCB_WRAPPER(BodyGenCB), FINICB_WRAPPER(FiniCB), Filter);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Value *EntryBBTI = EntryBB->getTerminator();
   EXPECT_NE(EntryBBTI, nullptr);
   EXPECT_TRUE(isa<BranchInst>(EntryBBTI));
@@ -2708,8 +3013,11 @@ TEST_F(OpenMPIRBuilderTest, CriticalDirective) {
   };
   BasicBlock *EntryBB = Builder.GetInsertBlock();
 
-  Builder.restoreIP(OMPBuilder.createCritical(Builder, BodyGenCB, FiniCB,
-                                              "testCRT", nullptr));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createCritical(Builder, BODYGENCB_WRAPPER(BodyGenCB),
+                                FINICB_WRAPPER(FiniCB), "testCRT", nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   CallInst *CriticalEntryCI = nullptr;
   for (auto &EI : *EntryBB) {
@@ -2956,8 +3264,11 @@ TEST_F(OpenMPIRBuilderTest, OrderedDirectiveThreads) {
 
   // Test for "#omp ordered [threads]"
   BasicBlock *EntryBB = Builder.GetInsertBlock();
-  Builder.restoreIP(
-      OMPBuilder.createOrderedThreadsSimd(Builder, BodyGenCB, FiniCB, true));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createOrderedThreadsSimd(Builder, BODYGENCB_WRAPPER(BodyGenCB),
+                                          FINICB_WRAPPER(FiniCB), true);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
@@ -3027,8 +3338,11 @@ TEST_F(OpenMPIRBuilderTest, OrderedDirectiveSimd) {
 
   // Test for "#omp ordered simd"
   BasicBlock *EntryBB = Builder.GetInsertBlock();
-  Builder.restoreIP(
-      OMPBuilder.createOrderedThreadsSimd(Builder, BodyGenCB, FiniCB, false));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createOrderedThreadsSimd(Builder, BODYGENCB_WRAPPER(BodyGenCB),
+                                          FINICB_WRAPPER(FiniCB), false);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
@@ -3070,8 +3384,8 @@ TEST_F(OpenMPIRBuilderTest, CopyinBlocks) {
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
 
   IntegerType *Int32 = Type::getInt32Ty(M->getContext());
-  AllocaInst *MasterAddress = Builder.CreateAlloca(Int32->getPointerTo());
-  AllocaInst *PrivAddress = Builder.CreateAlloca(Int32->getPointerTo());
+  AllocaInst *MasterAddress = Builder.CreateAlloca(Builder.getPtrTy());
+  AllocaInst *PrivAddress = Builder.CreateAlloca(Builder.getPtrTy());
 
   BasicBlock *EntryBB = BB;
 
@@ -3141,8 +3455,11 @@ TEST_F(OpenMPIRBuilderTest, SingleDirective) {
     EXPECT_NE(IPBB->end(), IP.getPoint());
   };
 
-  Builder.restoreIP(OMPBuilder.createSingle(
-      Builder, BodyGenCB, FiniCB, /*IsNowait*/ false, /*DidIt*/ nullptr));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createSingle(Builder, BODYGENCB_WRAPPER(BodyGenCB),
+                              FINICB_WRAPPER(FiniCB), /*IsNowait*/ false);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Value *EntryBBTI = EntryBB->getTerminator();
   EXPECT_NE(EntryBBTI, nullptr);
   EXPECT_TRUE(isa<BranchInst>(EntryBBTI));
@@ -3231,8 +3548,11 @@ TEST_F(OpenMPIRBuilderTest, SingleDirectiveNowait) {
     EXPECT_NE(IPBB->end(), IP.getPoint());
   };
 
-  Builder.restoreIP(OMPBuilder.createSingle(
-      Builder, BodyGenCB, FiniCB, /*IsNowait*/ true, /*DidIt*/ nullptr));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createSingle(Builder, BODYGENCB_WRAPPER(BodyGenCB),
+                              FINICB_WRAPPER(FiniCB), /*IsNowait*/ true);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Value *EntryBBTI = EntryBB->getTerminator();
   EXPECT_NE(EntryBBTI, nullptr);
   EXPECT_TRUE(isa<BranchInst>(EntryBBTI));
@@ -3276,6 +3596,153 @@ TEST_F(OpenMPIRBuilderTest, SingleDirectiveNowait) {
     }
   }
   EXPECT_EQ(ExitBarrier, nullptr);
+}
+
+// Helper class to check each instruction of a BB.
+class BBInstIter {
+  BasicBlock *BB;
+  BasicBlock::iterator BBI;
+
+public:
+  BBInstIter(BasicBlock *BB) : BB(BB), BBI(BB->begin()) {}
+
+  bool hasNext() const { return BBI != BB->end(); }
+
+  template <typename InstTy> InstTy *next() {
+    if (!hasNext())
+      return nullptr;
+    Instruction *Cur = &*BBI++;
+    if (!isa<InstTy>(Cur))
+      return nullptr;
+    return cast<InstTy>(Cur);
+  }
+};
+
+TEST_F(OpenMPIRBuilderTest, SingleDirectiveCopyPrivate) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> Builder(BB);
+
+  OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
+
+  AllocaInst *PrivAI = nullptr;
+
+  BasicBlock *EntryBB = nullptr;
+  BasicBlock *ThenBB = nullptr;
+
+  Value *CPVar = Builder.CreateAlloca(F->arg_begin()->getType());
+  Builder.CreateStore(F->arg_begin(), CPVar);
+
+  FunctionType *CopyFuncTy = FunctionType::get(
+      Builder.getVoidTy(), {Builder.getPtrTy(), Builder.getPtrTy()}, false);
+  Function *CopyFunc =
+      Function::Create(CopyFuncTy, Function::PrivateLinkage, "copy_var", *M);
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    if (AllocaIP.isSet())
+      Builder.restoreIP(AllocaIP);
+    else
+      Builder.SetInsertPoint(&*(F->getEntryBlock().getFirstInsertionPt()));
+    PrivAI = Builder.CreateAlloca(F->arg_begin()->getType());
+    Builder.CreateStore(F->arg_begin(), PrivAI);
+
+    llvm::BasicBlock *CodeGenIPBB = CodeGenIP.getBlock();
+    llvm::Instruction *CodeGenIPInst = &*CodeGenIP.getPoint();
+    EXPECT_EQ(CodeGenIPBB->getTerminator(), CodeGenIPInst);
+
+    Builder.restoreIP(CodeGenIP);
+
+    // collect some info for checks later
+    ThenBB = Builder.GetInsertBlock();
+    EntryBB = ThenBB->getUniquePredecessor();
+
+    // simple instructions for body
+    Value *PrivLoad =
+        Builder.CreateLoad(PrivAI->getAllocatedType(), PrivAI, "local.use");
+    Builder.CreateICmpNE(F->arg_begin(), PrivLoad);
+  };
+
+  auto FiniCB = [&](InsertPointTy IP) {
+    BasicBlock *IPBB = IP.getBlock();
+    // IP must be before the unconditional branch to ExitBB
+    EXPECT_NE(IPBB->end(), IP.getPoint());
+  };
+
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createSingle(
+      Builder, BODYGENCB_WRAPPER(BodyGenCB), FINICB_WRAPPER(FiniCB),
+      /*IsNowait*/ false, {CPVar}, {CopyFunc});
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+  Value *EntryBBTI = EntryBB->getTerminator();
+  EXPECT_NE(EntryBBTI, nullptr);
+  EXPECT_TRUE(isa<BranchInst>(EntryBBTI));
+  BranchInst *EntryBr = cast<BranchInst>(EntryBB->getTerminator());
+  EXPECT_TRUE(EntryBr->isConditional());
+  EXPECT_EQ(EntryBr->getSuccessor(0), ThenBB);
+  BasicBlock *ExitBB = ThenBB->getUniqueSuccessor();
+  EXPECT_EQ(EntryBr->getSuccessor(1), ExitBB);
+
+  CmpInst *CondInst = cast<CmpInst>(EntryBr->getCondition());
+  EXPECT_TRUE(isa<CallInst>(CondInst->getOperand(0)));
+
+  CallInst *SingleEntryCI = cast<CallInst>(CondInst->getOperand(0));
+  EXPECT_EQ(SingleEntryCI->arg_size(), 2U);
+  EXPECT_EQ(SingleEntryCI->getCalledFunction()->getName(), "__kmpc_single");
+  EXPECT_TRUE(isa<GlobalVariable>(SingleEntryCI->getArgOperand(0)));
+
+  // check ThenBB
+  BBInstIter ThenBBI(ThenBB);
+  // load PrivAI
+  auto *PrivLI = ThenBBI.next<LoadInst>();
+  EXPECT_NE(PrivLI, nullptr);
+  EXPECT_EQ(PrivLI->getPointerOperand(), PrivAI);
+  // icmp
+  EXPECT_TRUE(ThenBBI.next<ICmpInst>());
+  // store 1, DidIt
+  auto *DidItSI = ThenBBI.next<StoreInst>();
+  EXPECT_NE(DidItSI, nullptr);
+  EXPECT_EQ(DidItSI->getValueOperand(),
+            ConstantInt::get(Type::getInt32Ty(Ctx), 1));
+  Value *DidIt = DidItSI->getPointerOperand();
+  // call __kmpc_end_single
+  auto *SingleEndCI = ThenBBI.next<CallInst>();
+  EXPECT_NE(SingleEndCI, nullptr);
+  EXPECT_EQ(SingleEndCI->getCalledFunction()->getName(), "__kmpc_end_single");
+  EXPECT_EQ(SingleEndCI->arg_size(), 2U);
+  EXPECT_TRUE(isa<GlobalVariable>(SingleEndCI->getArgOperand(0)));
+  EXPECT_EQ(SingleEndCI->getArgOperand(1), SingleEntryCI->getArgOperand(1));
+  // br ExitBB
+  auto *ExitBBBI = ThenBBI.next<BranchInst>();
+  EXPECT_NE(ExitBBBI, nullptr);
+  EXPECT_TRUE(ExitBBBI->isUnconditional());
+  EXPECT_EQ(ExitBBBI->getOperand(0), ExitBB);
+  EXPECT_FALSE(ThenBBI.hasNext());
+
+  // check ExitBB
+  BBInstIter ExitBBI(ExitBB);
+  // call __kmpc_global_thread_num
+  auto *ThreadNumCI = ExitBBI.next<CallInst>();
+  EXPECT_NE(ThreadNumCI, nullptr);
+  EXPECT_EQ(ThreadNumCI->getCalledFunction()->getName(),
+            "__kmpc_global_thread_num");
+  // load DidIt
+  auto *DidItLI = ExitBBI.next<LoadInst>();
+  EXPECT_NE(DidItLI, nullptr);
+  EXPECT_EQ(DidItLI->getPointerOperand(), DidIt);
+  // call __kmpc_copyprivate
+  auto *CopyPrivateCI = ExitBBI.next<CallInst>();
+  EXPECT_NE(CopyPrivateCI, nullptr);
+  EXPECT_EQ(CopyPrivateCI->arg_size(), 6U);
+  EXPECT_TRUE(isa<AllocaInst>(CopyPrivateCI->getArgOperand(3)));
+  EXPECT_EQ(CopyPrivateCI->getArgOperand(3), CPVar);
+  EXPECT_TRUE(isa<Function>(CopyPrivateCI->getArgOperand(4)));
+  EXPECT_EQ(CopyPrivateCI->getArgOperand(4), CopyFunc);
+  EXPECT_TRUE(isa<LoadInst>(CopyPrivateCI->getArgOperand(5)));
+  DidItLI = cast<LoadInst>(CopyPrivateCI->getArgOperand(5));
+  EXPECT_EQ(DidItLI->getOperand(0), DidIt);
+  EXPECT_FALSE(ExitBBI.hasNext());
 }
 
 TEST_F(OpenMPIRBuilderTest, OMPAtomicReadFlt) {
@@ -3468,8 +3935,10 @@ TEST_F(OpenMPIRBuilderTest, OMPAtomicUpdate) {
     Sub = IRB.CreateSub(ConstVal, Atomic);
     return Sub;
   };
-  Builder.restoreIP(OMPBuilder.createAtomicUpdate(
-      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createAtomicUpdate(
+      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   BasicBlock *ContBB = EntryBB->getSingleSuccessor();
   BranchInst *ContTI = dyn_cast<BranchInst>(ContBB->getTerminator());
   EXPECT_NE(ContTI, nullptr);
@@ -3535,8 +4004,10 @@ TEST_F(OpenMPIRBuilderTest, OMPAtomicUpdateFloat) {
     Sub = IRB.CreateFSub(ConstVal, Atomic);
     return Sub;
   };
-  Builder.restoreIP(OMPBuilder.createAtomicUpdate(
-      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createAtomicUpdate(
+      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   BasicBlock *ContBB = EntryBB->getSingleSuccessor();
   BranchInst *ContTI = dyn_cast<BranchInst>(ContBB->getTerminator());
   EXPECT_NE(ContTI, nullptr);
@@ -3601,8 +4072,10 @@ TEST_F(OpenMPIRBuilderTest, OMPAtomicUpdateIntr) {
     Sub = IRB.CreateSub(ConstVal, Atomic);
     return Sub;
   };
-  Builder.restoreIP(OMPBuilder.createAtomicUpdate(
-      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createAtomicUpdate(
+      Builder, AllocaIP, X, Expr, AO, RMWOp, UpdateOp, IsXLHSInRHSPart);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   BasicBlock *ContBB = EntryBB->getSingleSuccessor();
   BranchInst *ContTI = dyn_cast<BranchInst>(ContBB->getTerminator());
   EXPECT_NE(ContTI, nullptr);
@@ -3673,9 +4146,12 @@ TEST_F(OpenMPIRBuilderTest, OMPAtomicCapture) {
   // integer update - not used
   auto UpdateOp = [&](Value *Atomic, IRBuilder<> &IRB) { return nullptr; };
 
-  Builder.restoreIP(OMPBuilder.createAtomicCapture(
-      Builder, AllocaIP, X, V, Expr, AO, RMWOp, UpdateOp, UpdateExpr,
-      IsPostfixUpdate, IsXLHSInRHSPart));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createAtomicCapture(Builder, AllocaIP, X, V, Expr, AO, RMWOp,
+                                     UpdateOp, UpdateExpr, IsPostfixUpdate,
+                                     IsXLHSInRHSPart);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   EXPECT_EQ(EntryBB->getParent()->size(), 1U);
   AtomicRMWInst *ARWM = dyn_cast<AtomicRMWInst>(Init->getNextNode());
   EXPECT_NE(ARWM, nullptr);
@@ -4004,6 +4480,7 @@ TEST_F(OpenMPIRBuilderTest, OMPAtomicCompareCapture) {
 TEST_F(OpenMPIRBuilderTest, CreateTeams) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -4030,10 +4507,15 @@ TEST_F(OpenMPIRBuilderTest, CreateTeams) {
     Instruction *ThenTerm, *ElseTerm;
     SplitBlockAndInsertIfThenElse(Cmp, CodeGenIP.getBlock()->getTerminator(),
                                   &ThenTerm, &ElseTerm);
+    return Error::success();
   };
 
   OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
-  Builder.restoreIP(OMPBuilder.createTeams(Builder, BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTeams(
+      Builder, BodyGenCB, /*NumTeamsLower=*/nullptr, /*NumTeamsUpper=*/nullptr,
+      /*ThreadLimit=*/nullptr, /*IfExpr=*/nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
@@ -4057,29 +4539,387 @@ TEST_F(OpenMPIRBuilderTest, CreateTeams) {
   ASSERT_NE(SrcSrc, nullptr);
 
   // Verify the outlined function signature.
-  Function *WrapperFn =
+  Function *OutlinedFn =
       dyn_cast<Function>(TeamsForkCall->getArgOperand(2)->stripPointerCasts());
-  ASSERT_NE(WrapperFn, nullptr);
-  EXPECT_FALSE(WrapperFn->isDeclaration());
-  EXPECT_TRUE(WrapperFn->arg_size() >= 3);
-  EXPECT_EQ(WrapperFn->getArg(0)->getType(), Builder.getPtrTy()); // global_tid
-  EXPECT_EQ(WrapperFn->getArg(1)->getType(), Builder.getPtrTy()); // bound_tid
-  EXPECT_EQ(WrapperFn->getArg(2)->getType(),
+  ASSERT_NE(OutlinedFn, nullptr);
+  EXPECT_FALSE(OutlinedFn->isDeclaration());
+  EXPECT_TRUE(OutlinedFn->arg_size() >= 3);
+  EXPECT_EQ(OutlinedFn->getArg(0)->getType(), Builder.getPtrTy()); // global_tid
+  EXPECT_EQ(OutlinedFn->getArg(1)->getType(), Builder.getPtrTy()); // bound_tid
+  EXPECT_EQ(OutlinedFn->getArg(2)->getType(),
             Builder.getPtrTy()); // captured args
 
   // Check for TruncInst and ICmpInst in the outlined function.
-  inst_range Instructions = instructions(WrapperFn);
-  auto OutlinedFnInst = find_if(
-      Instructions, [](Instruction &Inst) { return isa<CallInst>(&Inst); });
-  ASSERT_NE(OutlinedFnInst, Instructions.end());
-  CallInst *OutlinedFnCI = dyn_cast<CallInst>(&*OutlinedFnInst);
-  ASSERT_NE(OutlinedFnCI, nullptr);
-  Function *OutlinedFn = OutlinedFnCI->getCalledFunction();
-
   EXPECT_TRUE(any_of(instructions(OutlinedFn),
                      [](Instruction &inst) { return isa<TruncInst>(&inst); }));
   EXPECT_TRUE(any_of(instructions(OutlinedFn),
                      [](Instruction &inst) { return isa<ICmpInst>(&inst); }));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithThreadLimit) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  // `F` has an argument - an integer, so we use that as the thread limit.
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTeams(
+      /*=*/Builder, BodyGenCB, /*NumTeamsLower=*/nullptr,
+      /*NumTeamsUpper=*/nullptr, /*ThreadLimit=*/F->arg_begin(),
+      /*IfExpr=*/nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(2), Builder.getInt32(0));
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(3), Builder.getInt32(0));
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(4), &*F->arg_begin());
+
+  // Verifying that the next instruction to execute is kmpc_fork_teams
+  BranchInst *BrInst =
+      dyn_cast<BranchInst>(PushNumTeamsCallInst->getNextNonDebugInstruction());
+  ASSERT_NE(BrInst, nullptr);
+  ASSERT_EQ(BrInst->getNumSuccessors(), 1U);
+  Instruction *NextInstruction =
+      BrInst->getSuccessor(0)->getFirstNonPHIOrDbgOrLifetime();
+  CallInst *ForkTeamsCI = dyn_cast_if_present<CallInst>(NextInstruction);
+  ASSERT_NE(ForkTeamsCI, nullptr);
+  EXPECT_EQ(ForkTeamsCI->getCalledFunction(),
+            OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_fork_teams));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithNumTeamsUpper) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  // `F` already has an integer argument, so we use that as upper bound to
+  // `num_teams`
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTeams(Builder, BodyGenCB,
+                             /*NumTeamsLower=*/nullptr,
+                             /*NumTeamsUpper=*/F->arg_begin(),
+                             /*ThreadLimit=*/nullptr,
+                             /*IfExpr=*/nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(2), &*F->arg_begin());
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(3), &*F->arg_begin());
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(4), Builder.getInt32(0));
+
+  // Verifying that the next instruction to execute is kmpc_fork_teams
+  BranchInst *BrInst =
+      dyn_cast<BranchInst>(PushNumTeamsCallInst->getNextNonDebugInstruction());
+  ASSERT_NE(BrInst, nullptr);
+  ASSERT_EQ(BrInst->getNumSuccessors(), 1U);
+  Instruction *NextInstruction =
+      BrInst->getSuccessor(0)->getFirstNonPHIOrDbgOrLifetime();
+  CallInst *ForkTeamsCI = dyn_cast_if_present<CallInst>(NextInstruction);
+  ASSERT_NE(ForkTeamsCI, nullptr);
+  EXPECT_EQ(ForkTeamsCI->getCalledFunction(),
+            OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_fork_teams));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithNumTeamsBoth) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  Value *NumTeamsLower =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(5), "numTeamsLower");
+  Value *NumTeamsUpper =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(10), "numTeamsUpper");
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  // `F` already has an integer argument, so we use that as upper bound to
+  // `num_teams`
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTeams(Builder, BodyGenCB, NumTeamsLower, NumTeamsUpper,
+                             /*ThreadLimit=*/nullptr, /*IfExpr=*/nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(2), NumTeamsLower);
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(3), NumTeamsUpper);
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(4), Builder.getInt32(0));
+
+  // Verifying that the next instruction to execute is kmpc_fork_teams
+  BranchInst *BrInst =
+      dyn_cast<BranchInst>(PushNumTeamsCallInst->getNextNonDebugInstruction());
+  ASSERT_NE(BrInst, nullptr);
+  ASSERT_EQ(BrInst->getNumSuccessors(), 1U);
+  Instruction *NextInstruction =
+      BrInst->getSuccessor(0)->getFirstNonPHIOrDbgOrLifetime();
+  CallInst *ForkTeamsCI = dyn_cast_if_present<CallInst>(NextInstruction);
+  ASSERT_NE(ForkTeamsCI, nullptr);
+  EXPECT_EQ(ForkTeamsCI->getCalledFunction(),
+            OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_fork_teams));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithNumTeamsAndThreadLimit) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  BasicBlock *CodegenBB = splitBB(Builder, true);
+  Builder.SetInsertPoint(CodegenBB);
+
+  // Generate values for `num_teams` and `thread_limit` using the first argument
+  // of the testing function.
+  Value *NumTeamsLower =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(5), "numTeamsLower");
+  Value *NumTeamsUpper =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(10), "numTeamsUpper");
+  Value *ThreadLimit =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(20), "threadLimit");
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTeams(
+      Builder, BodyGenCB, NumTeamsLower, NumTeamsUpper, ThreadLimit, nullptr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(2), NumTeamsLower);
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(3), NumTeamsUpper);
+  EXPECT_EQ(PushNumTeamsCallInst->getArgOperand(4), ThreadLimit);
+
+  // Verifying that the next instruction to execute is kmpc_fork_teams
+  BranchInst *BrInst =
+      dyn_cast<BranchInst>(PushNumTeamsCallInst->getNextNonDebugInstruction());
+  ASSERT_NE(BrInst, nullptr);
+  ASSERT_EQ(BrInst->getNumSuccessors(), 1U);
+  Instruction *NextInstruction =
+      BrInst->getSuccessor(0)->getFirstNonPHIOrDbgOrLifetime();
+  CallInst *ForkTeamsCI = dyn_cast_if_present<CallInst>(NextInstruction);
+  ASSERT_NE(ForkTeamsCI, nullptr);
+  EXPECT_EQ(ForkTeamsCI->getCalledFunction(),
+            OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_fork_teams));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithIfCondition) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  Value *IfExpr = Builder.CreateLoad(Builder.getInt1Ty(),
+                                     Builder.CreateAlloca(Builder.getInt1Ty()));
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  // `F` already has an integer argument, so we use that as upper bound to
+  // `num_teams`
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTeams(
+      Builder, BodyGenCB, /*NumTeamsLower=*/nullptr, /*NumTeamsUpper=*/nullptr,
+      /*ThreadLimit=*/nullptr, IfExpr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+  Value *NumTeamsLower = PushNumTeamsCallInst->getArgOperand(2);
+  Value *NumTeamsUpper = PushNumTeamsCallInst->getArgOperand(3);
+  Value *ThreadLimit = PushNumTeamsCallInst->getArgOperand(4);
+
+  // Check the lower_bound
+  ASSERT_NE(NumTeamsLower, nullptr);
+  SelectInst *NumTeamsLowerSelectInst = dyn_cast<SelectInst>(NumTeamsLower);
+  ASSERT_NE(NumTeamsLowerSelectInst, nullptr);
+  EXPECT_EQ(NumTeamsLowerSelectInst->getCondition(), IfExpr);
+  EXPECT_EQ(NumTeamsLowerSelectInst->getTrueValue(), Builder.getInt32(0));
+  EXPECT_EQ(NumTeamsLowerSelectInst->getFalseValue(), Builder.getInt32(1));
+
+  // Check the upper_bound
+  ASSERT_NE(NumTeamsUpper, nullptr);
+  SelectInst *NumTeamsUpperSelectInst = dyn_cast<SelectInst>(NumTeamsUpper);
+  ASSERT_NE(NumTeamsUpperSelectInst, nullptr);
+  EXPECT_EQ(NumTeamsUpperSelectInst->getCondition(), IfExpr);
+  EXPECT_EQ(NumTeamsUpperSelectInst->getTrueValue(), Builder.getInt32(0));
+  EXPECT_EQ(NumTeamsUpperSelectInst->getFalseValue(), Builder.getInt32(1));
+
+  // Check thread_limit
+  EXPECT_EQ(ThreadLimit, Builder.getInt32(0));
+}
+
+TEST_F(OpenMPIRBuilderTest, CreateTeamsWithIfConditionAndNumTeams) {
+  using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
+  OMPBuilder.initialize();
+  F->setName("func");
+  IRBuilder<> &Builder = OMPBuilder.Builder;
+  Builder.SetInsertPoint(BB);
+
+  Value *IfExpr = Builder.CreateLoad(
+      Builder.getInt32Ty(), Builder.CreateAlloca(Builder.getInt32Ty()));
+  Value *NumTeamsLower = Builder.CreateAdd(F->arg_begin(), Builder.getInt32(5));
+  Value *NumTeamsUpper =
+      Builder.CreateAdd(F->arg_begin(), Builder.getInt32(10));
+  Value *ThreadLimit = Builder.CreateAdd(F->arg_begin(), Builder.getInt32(20));
+
+  Function *FakeFunction =
+      Function::Create(FunctionType::get(Builder.getVoidTy(), false),
+                       GlobalValue::ExternalLinkage, "fakeFunction", M.get());
+
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    Builder.restoreIP(CodeGenIP);
+    Builder.CreateCall(FakeFunction, {});
+    return Error::success();
+  };
+
+  // `F` already has an integer argument, so we use that as upper bound to
+  // `num_teams`
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTeams(
+      Builder, BodyGenCB, NumTeamsLower, NumTeamsUpper, ThreadLimit, IfExpr);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  ASSERT_FALSE(verifyModule(*M));
+
+  CallInst *PushNumTeamsCallInst =
+      findSingleCall(F, OMPRTL___kmpc_push_num_teams_51, OMPBuilder);
+  ASSERT_NE(PushNumTeamsCallInst, nullptr);
+  Value *NumTeamsLowerArg = PushNumTeamsCallInst->getArgOperand(2);
+  Value *NumTeamsUpperArg = PushNumTeamsCallInst->getArgOperand(3);
+  Value *ThreadLimitArg = PushNumTeamsCallInst->getArgOperand(4);
+
+  // Get the boolean conversion of if expression
+  ASSERT_EQ(IfExpr->getNumUses(), 1U);
+  User *IfExprInst = IfExpr->user_back();
+  ICmpInst *IfExprCmpInst = dyn_cast<ICmpInst>(IfExprInst);
+  ASSERT_NE(IfExprCmpInst, nullptr);
+  EXPECT_EQ(IfExprCmpInst->getPredicate(), ICmpInst::Predicate::ICMP_NE);
+  EXPECT_EQ(IfExprCmpInst->getOperand(0), IfExpr);
+  EXPECT_EQ(IfExprCmpInst->getOperand(1), Builder.getInt32(0));
+
+  // Check the lower_bound
+  ASSERT_NE(NumTeamsLowerArg, nullptr);
+  SelectInst *NumTeamsLowerSelectInst = dyn_cast<SelectInst>(NumTeamsLowerArg);
+  ASSERT_NE(NumTeamsLowerSelectInst, nullptr);
+  EXPECT_EQ(NumTeamsLowerSelectInst->getCondition(), IfExprCmpInst);
+  EXPECT_EQ(NumTeamsLowerSelectInst->getTrueValue(), NumTeamsLower);
+  EXPECT_EQ(NumTeamsLowerSelectInst->getFalseValue(), Builder.getInt32(1));
+
+  // Check the upper_bound
+  ASSERT_NE(NumTeamsUpperArg, nullptr);
+  SelectInst *NumTeamsUpperSelectInst = dyn_cast<SelectInst>(NumTeamsUpperArg);
+  ASSERT_NE(NumTeamsUpperSelectInst, nullptr);
+  EXPECT_EQ(NumTeamsUpperSelectInst->getCondition(), IfExprCmpInst);
+  EXPECT_EQ(NumTeamsUpperSelectInst->getTrueValue(), NumTeamsUpper);
+  EXPECT_EQ(NumTeamsUpperSelectInst->getFalseValue(), Builder.getInt32(1));
+
+  // Check thread_limit
+  EXPECT_EQ(ThreadLimitArg, ThreadLimit);
 }
 
 /// Returns the single instruction of InstTy type in BB that uses the value V.
@@ -4212,6 +5052,7 @@ xorAtomicReduction(OpenMPIRBuilder::InsertPointTy IP, Type *Ty, Value *LHS,
 TEST_F(OpenMPIRBuilderTest, CreateReductions) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -4263,6 +5104,7 @@ TEST_F(OpenMPIRBuilderTest, CreateReductions) {
 
     BodyIP = Builder.saveIP();
     BodyAllocaIP = InnerAllocaIP;
+    return Error::success();
   };
 
   // Privatization for reduction creates local copies of reduction variables and
@@ -4295,22 +5137,33 @@ TEST_F(OpenMPIRBuilderTest, CreateReductions) {
   };
 
   // Do nothing in finalization.
-  auto FiniCB = [&](InsertPointTy CodeGenIP) { return CodeGenIP; };
+  auto FiniCB = [&](InsertPointTy CodeGenIP) { return Error::success(); };
 
-  InsertPointTy AfterIP =
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
       OMPBuilder.createParallel(Loc, OuterAllocaIP, BodyGenCB, PrivCB, FiniCB,
                                 /* IfCondition */ nullptr,
                                 /* NumThreads */ nullptr, OMP_PROC_BIND_default,
                                 /* IsCancellable */ false);
-  Builder.restoreIP(AfterIP);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   OpenMPIRBuilder::ReductionInfo ReductionInfos[] = {
-      {SumType, SumReduced, SumPrivatized, sumReduction, sumAtomicReduction},
-      {XorType, XorReduced, XorPrivatized, xorReduction, xorAtomicReduction}};
+      {SumType, SumReduced, SumPrivatized,
+       /*EvaluationKind=*/OpenMPIRBuilder::EvalKind::Scalar, sumReduction,
+       /*ReductionGenClang=*/nullptr, sumAtomicReduction},
+      {XorType, XorReduced, XorPrivatized,
+       /*EvaluationKind=*/OpenMPIRBuilder::EvalKind::Scalar, xorReduction,
+       /*ReductionGenClang=*/nullptr, xorAtomicReduction}};
+  OMPBuilder.Config.setIsGPU(false);
 
-  OMPBuilder.createReductions(BodyIP, BodyAllocaIP, ReductionInfos);
+  bool ReduceVariableByRef[] = {false, false};
 
-  Builder.restoreIP(AfterIP);
+  OpenMPIRBuilder::InsertPointOrErrorTy ReductionsIP =
+      OMPBuilder.createReductions(BodyIP, BodyAllocaIP, ReductionInfos,
+                                  ReduceVariableByRef);
+  assert(ReductionsIP && "unexpected error");
+
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize(F);
@@ -4444,6 +5297,7 @@ TEST_F(OpenMPIRBuilderTest, CreateReductions) {
 TEST_F(OpenMPIRBuilderTest, CreateTwoReductions) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -4489,6 +5343,7 @@ TEST_F(OpenMPIRBuilderTest, CreateTwoReductions) {
 
     FirstBodyIP = Builder.saveIP();
     FirstBodyAllocaIP = InnerAllocaIP;
+    return Error::success();
   };
 
   InsertPointTy SecondBodyIP, SecondBodyAllocaIP;
@@ -4507,6 +5362,7 @@ TEST_F(OpenMPIRBuilderTest, CreateTwoReductions) {
 
     SecondBodyIP = Builder.saveIP();
     SecondBodyAllocaIP = InnerAllocaIP;
+    return Error::success();
   };
 
   // Privatization for reduction creates local copies of reduction variables and
@@ -4541,27 +5397,44 @@ TEST_F(OpenMPIRBuilderTest, CreateTwoReductions) {
   };
 
   // Do nothing in finalization.
-  auto FiniCB = [&](InsertPointTy CodeGenIP) { return CodeGenIP; };
+  auto FiniCB = [&](InsertPointTy CodeGenIP) { return Error::success(); };
 
-  Builder.restoreIP(
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP1 =
       OMPBuilder.createParallel(Loc, OuterAllocaIP, FirstBodyGenCB, PrivCB,
                                 FiniCB, /* IfCondition */ nullptr,
                                 /* NumThreads */ nullptr, OMP_PROC_BIND_default,
-                                /* IsCancellable */ false));
-  InsertPointTy AfterIP = OMPBuilder.createParallel(
+                                /* IsCancellable */ false);
+  assert(AfterIP1 && "unexpected error");
+  Builder.restoreIP(*AfterIP1);
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP2 = OMPBuilder.createParallel(
       {Builder.saveIP(), DL}, OuterAllocaIP, SecondBodyGenCB, PrivCB, FiniCB,
       /* IfCondition */ nullptr,
       /* NumThreads */ nullptr, OMP_PROC_BIND_default,
       /* IsCancellable */ false);
+  assert(AfterIP2 && "unexpected error");
+  Builder.restoreIP(*AfterIP2);
 
-  OMPBuilder.createReductions(
-      FirstBodyIP, FirstBodyAllocaIP,
-      {{SumType, SumReduced, SumPrivatized, sumReduction, sumAtomicReduction}});
-  OMPBuilder.createReductions(
-      SecondBodyIP, SecondBodyAllocaIP,
-      {{XorType, XorReduced, XorPrivatized, xorReduction, xorAtomicReduction}});
+  OMPBuilder.Config.setIsGPU(false);
+  bool ReduceVariableByRef[] = {false};
 
-  Builder.restoreIP(AfterIP);
+  OpenMPIRBuilder::InsertPointOrErrorTy ReductionsIP1 =
+      OMPBuilder.createReductions(
+          FirstBodyIP, FirstBodyAllocaIP,
+          {{SumType, SumReduced, SumPrivatized,
+            /*EvaluationKind=*/OpenMPIRBuilder::EvalKind::Scalar, sumReduction,
+            /*ReductionGenClang=*/nullptr, sumAtomicReduction}},
+          ReduceVariableByRef);
+  assert(ReductionsIP1 && "unexpected error");
+  OpenMPIRBuilder::InsertPointOrErrorTy ReductionsIP2 =
+      OMPBuilder.createReductions(
+          SecondBodyIP, SecondBodyAllocaIP,
+          {{XorType, XorReduced, XorPrivatized,
+            /*EvaluationKind=*/OpenMPIRBuilder::EvalKind::Scalar, xorReduction,
+            /*ReductionGenClang=*/nullptr, xorAtomicReduction}},
+          ReduceVariableByRef);
+  assert(ReductionsIP2 && "unexpected error");
+
+  Builder.restoreIP(*AfterIP2);
   Builder.CreateRetVoid();
 
   OMPBuilder.finalize(F);
@@ -4628,8 +5501,10 @@ TEST_F(OpenMPIRBuilderTest, CreateSectionsSimple) {
   llvm::SmallVector<BodyGenCallbackTy, 4> SectionCBVector;
   llvm::SmallVector<BasicBlock *, 4> CaseBBs;
 
-  auto FiniCB = [&](InsertPointTy IP) {};
-  auto SectionCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
+  auto FiniCB = [&](InsertPointTy IP) { return Error::success(); };
+  auto SectionCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
   SectionCBVector.push_back(SectionCB);
 
   auto PrivCB = [](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
@@ -4637,8 +5512,10 @@ TEST_F(OpenMPIRBuilderTest, CreateSectionsSimple) {
                    llvm::Value *&ReplVal) { return CodeGenIP; };
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  Builder.restoreIP(OMPBuilder.createSections(Loc, AllocaIP, SectionCBVector,
-                                              PrivCB, FiniCB, false, false));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createSections(
+      Loc, AllocaIP, SectionCBVector, PrivCB, FiniCB, false, false);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid(); // Required at the end of the function
   EXPECT_NE(F->getEntryBlock().getTerminator(), nullptr);
   EXPECT_FALSE(verifyModule(*M, &errs()));
@@ -4679,6 +5556,7 @@ TEST_F(OpenMPIRBuilderTest, CreateSections) {
     Value *PrivLoad =
         Builder.CreateLoad(F->arg_begin()->getType(), PrivAI, "local.alloca");
     Builder.CreateICmpNE(F->arg_begin(), PrivLoad);
+    return Error::success();
   };
   auto PrivCB = [](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
                    llvm::Value &, llvm::Value &Val, llvm::Value *&ReplVal) {
@@ -4691,8 +5569,11 @@ TEST_F(OpenMPIRBuilderTest, CreateSections) {
 
   IRBuilder<>::InsertPoint AllocaIP(&F->getEntryBlock(),
                                     F->getEntryBlock().getFirstInsertionPt());
-  Builder.restoreIP(OMPBuilder.createSections(Loc, AllocaIP, SectionCBVector,
-                                              PrivCB, FiniCB, false, false));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createSections(Loc, AllocaIP, SectionCBVector, PrivCB,
+                                FINICB_WRAPPER(FiniCB), false, false);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid(); // Required at the end of the function
 
   // Switch BB's predecessor is loop condition BB, whose successor at index 1 is
@@ -4776,10 +5657,12 @@ TEST_F(OpenMPIRBuilderTest, CreateSectionsNoWait) {
   auto PrivCB = [](InsertPointTy AllocaIP, InsertPointTy CodeGenIP,
                    llvm::Value &, llvm::Value &Val,
                    llvm::Value *&ReplVal) { return CodeGenIP; };
-  auto FiniCB = [&](InsertPointTy IP) {};
+  auto FiniCB = [&](InsertPointTy IP) { return Error::success(); };
 
-  Builder.restoreIP(OMPBuilder.createSections(Loc, AllocaIP, SectionCBVector,
-                                              PrivCB, FiniCB, false, true));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createSections(
+      Loc, AllocaIP, SectionCBVector, PrivCB, FiniCB, false, true);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   Builder.CreateRetVoid(); // Required at the end of the function
   for (auto &Inst : instructions(*F)) {
     EXPECT_FALSE(isa<CallInst>(Inst) &&
@@ -4937,7 +5820,7 @@ TEST_F(OpenMPIRBuilderTest, EmitMapperCall) {
   GlobalVariable *Mapnames =
       OMPBuilder.createOffloadMapnames(Names, ".offload_mapnames");
   Value *MapnamesArg = Builder.CreateConstInBoundsGEP2_32(
-      ArrayType::get(Type::getInt8PtrTy(Ctx), TotalNbOperand), Mapnames,
+      ArrayType::get(PointerType::getUnqual(Ctx), TotalNbOperand), Mapnames,
       /*Idx0=*/0, /*Idx1=*/0);
 
   OMPBuilder.emitMapperCall(Builder.saveIP(), BeginMapperFunc, SrcLocInfo,
@@ -5000,9 +5883,11 @@ TEST_F(OpenMPIRBuilderTest, TargetEnterData) {
   OMPBuilder.Config.setIsGPU(true);
 
   llvm::omp::RuntimeFunction RTLFunc = OMPRTL___tgt_target_data_begin_mapper;
-  Builder.restoreIP(OMPBuilder.createTargetData(
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTargetData(
       Loc, AllocaIP, Builder.saveIP(), Builder.getInt64(DeviceID),
-      /* IfCond= */ nullptr, Info, GenMapInfoCB, &RTLFunc));
+      /* IfCond= */ nullptr, Info, GenMapInfoCB, &RTLFunc);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   CallInst *TargetDataCall = dyn_cast<CallInst>(&BB->back());
   EXPECT_NE(TargetDataCall, nullptr);
@@ -5059,9 +5944,11 @@ TEST_F(OpenMPIRBuilderTest, TargetExitData) {
   OMPBuilder.Config.setIsGPU(true);
 
   llvm::omp::RuntimeFunction RTLFunc = OMPRTL___tgt_target_data_end_mapper;
-  Builder.restoreIP(OMPBuilder.createTargetData(
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTargetData(
       Loc, AllocaIP, Builder.saveIP(), Builder.getInt64(DeviceID),
-      /* IfCond= */ nullptr, Info, GenMapInfoCB, &RTLFunc));
+      /* IfCond= */ nullptr, Info, GenMapInfoCB, &RTLFunc);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   CallInst *TargetDataCall = dyn_cast<CallInst>(&BB->back());
   EXPECT_NE(TargetDataCall, nullptr);
@@ -5167,9 +6054,12 @@ TEST_F(OpenMPIRBuilderTest, TargetDataRegion) {
     return Builder.saveIP();
   };
 
-  Builder.restoreIP(OMPBuilder.createTargetData(
-      Loc, AllocaIP, Builder.saveIP(), Builder.getInt64(DeviceID),
-      /* IfCond= */ nullptr, Info, GenMapInfoCB, nullptr, BodyCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy TargetDataIP1 =
+      OMPBuilder.createTargetData(
+          Loc, AllocaIP, Builder.saveIP(), Builder.getInt64(DeviceID),
+          /* IfCond= */ nullptr, Info, GenMapInfoCB, nullptr, BodyCB);
+  assert(TargetDataIP1 && "unexpected error");
+  Builder.restoreIP(*TargetDataIP1);
 
   CallInst *TargetDataCall = dyn_cast<CallInst>(&BB->back());
   EXPECT_NE(TargetDataCall, nullptr);
@@ -5179,6 +6069,26 @@ TEST_F(OpenMPIRBuilderTest, TargetDataRegion) {
   EXPECT_TRUE(TargetDataCall->getOperand(1)->getType()->isIntegerTy(64));
   EXPECT_TRUE(TargetDataCall->getOperand(2)->getType()->isIntegerTy(32));
   EXPECT_TRUE(TargetDataCall->getOperand(8)->getType()->isPointerTy());
+
+  // Check that BodyGenCB is still made when IsTargetDevice is set to true.
+  OMPBuilder.Config.setIsTargetDevice(true);
+  bool CheckDevicePassBodyGen = false;
+  auto BodyTargetCB = [&](InsertPointTy CodeGenIP, BodyGenTy BodyGenType) {
+    CheckDevicePassBodyGen = true;
+    Builder.restoreIP(CodeGenIP);
+    CallInst *TargetDataCall =
+        dyn_cast<CallInst>(BB->back().getPrevNode()->getPrevNode());
+    // Make sure no begin_mapper call is present for device pass.
+    EXPECT_EQ(TargetDataCall, nullptr);
+    return Builder.saveIP();
+  };
+  OpenMPIRBuilder::InsertPointOrErrorTy TargetDataIP2 =
+      OMPBuilder.createTargetData(
+          Loc, AllocaIP, Builder.saveIP(), Builder.getInt64(DeviceID),
+          /* IfCond= */ nullptr, Info, GenMapInfoCB, nullptr, BodyTargetCB);
+  assert(TargetDataIP2 && "unexpected error");
+  Builder.restoreIP(*TargetDataIP2);
+  EXPECT_TRUE(CheckDevicePassBodyGen);
 
   Builder.CreateRetVoid();
   EXPECT_FALSE(verifyModule(*M, &errs()));
@@ -5236,6 +6146,33 @@ TEST_F(OpenMPIRBuilderTest, TargetRegion) {
   Inputs.push_back(BPtr);
   Inputs.push_back(CPtr);
 
+  auto SimpleArgAccessorCB =
+      [&](llvm::Argument &Arg, llvm::Value *Input, llvm::Value *&RetVal,
+          llvm::OpenMPIRBuilder::InsertPointTy AllocaIP,
+          llvm::OpenMPIRBuilder::InsertPointTy CodeGenIP) {
+        if (!OMPBuilder.Config.isTargetDevice()) {
+          RetVal = cast<llvm::Value>(&Arg);
+          return CodeGenIP;
+        }
+
+        Builder.restoreIP(AllocaIP);
+
+        llvm::Value *Addr = Builder.CreateAlloca(
+            Arg.getType()->isPointerTy()
+                ? Arg.getType()
+                : Type::getInt64Ty(Builder.getContext()),
+            OMPBuilder.M.getDataLayout().getAllocaAddrSpace());
+        llvm::Value *AddrAscast =
+            Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, Input->getType());
+        Builder.CreateStore(&Arg, AddrAscast);
+
+        Builder.restoreIP(CodeGenIP);
+
+        RetVal = Builder.CreateLoad(Arg.getType(), AddrAscast);
+
+        return Builder.saveIP();
+      };
+
   llvm::OpenMPIRBuilder::MapInfosTy CombinedInfos;
   auto GenMapInfoCB = [&](llvm::OpenMPIRBuilder::InsertPointTy codeGenIP)
       -> llvm::OpenMPIRBuilder::MapInfosTy & {
@@ -5245,9 +6182,11 @@ TEST_F(OpenMPIRBuilderTest, TargetRegion) {
 
   TargetRegionEntryInfo EntryInfo("func", 42, 4711, 17);
   OpenMPIRBuilder::LocationDescription OmpLoc({Builder.saveIP(), DL});
-  Builder.restoreIP(OMPBuilder.createTarget(OmpLoc, Builder.saveIP(),
-                                            Builder.saveIP(), EntryInfo, -1, 0,
-                                            Inputs, GenMapInfoCB, BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTarget(
+      OmpLoc, /*IsOffloadEntry=*/true, Builder.saveIP(), Builder.saveIP(),
+      EntryInfo, -1, 0, Inputs, GenMapInfoCB, BodyGenCB, SimpleArgAccessorCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5263,12 +6202,16 @@ TEST_F(OpenMPIRBuilderTest, TargetRegion) {
   Function *KernelLaunchFunc = Call->getCalledFunction();
   EXPECT_NE(KernelLaunchFunc, nullptr);
   StringRef FunctionName = KernelLaunchFunc->getName();
-  EXPECT_TRUE(FunctionName.startswith("__tgt_target_kernel"));
+  EXPECT_TRUE(FunctionName.starts_with("__tgt_target_kernel"));
 
   // Check the fallback call
   BasicBlock *FallbackBlock = Branch->getSuccessor(0);
   Iter = FallbackBlock->rbegin();
   CallInst *FCall = dyn_cast<CallInst>(&*(++Iter));
+  // 'F' has a dummy DISubprogram which causes OutlinedFunc to also
+  // have a DISubprogram. In this case, the call to OutlinedFunc needs
+  // to have a debug loc, otherwise verifier will complain.
+  FCall->setDebugLoc(DL);
   EXPECT_NE(FCall, nullptr);
 
   // Check that the correct aguments are passed in
@@ -5280,7 +6223,7 @@ TEST_F(OpenMPIRBuilderTest, TargetRegion) {
   Function *OutlinedFunc = FCall->getCalledFunction();
   EXPECT_NE(OutlinedFunc, nullptr);
   StringRef FunctionName2 = OutlinedFunc->getName();
-  EXPECT_TRUE(FunctionName2.startswith("__omp_offloading"));
+  EXPECT_TRUE(FunctionName2.starts_with("__omp_offloading"));
 
   EXPECT_FALSE(verifyModule(*M, &errs()));
 }
@@ -5300,6 +6243,33 @@ TEST_F(OpenMPIRBuilderTest, TargetRegionDevice) {
   llvm::SmallVector<llvm::Value *, 2> CapturedArgs = {
       Constant::getNullValue(PointerType::get(Ctx, 0)),
       Constant::getNullValue(PointerType::get(Ctx, 0))};
+
+  auto SimpleArgAccessorCB =
+      [&](llvm::Argument &Arg, llvm::Value *Input, llvm::Value *&RetVal,
+          llvm::OpenMPIRBuilder::InsertPointTy AllocaIP,
+          llvm::OpenMPIRBuilder::InsertPointTy CodeGenIP) {
+        if (!OMPBuilder.Config.isTargetDevice()) {
+          RetVal = cast<llvm::Value>(&Arg);
+          return CodeGenIP;
+        }
+
+        Builder.restoreIP(AllocaIP);
+
+        llvm::Value *Addr = Builder.CreateAlloca(
+            Arg.getType()->isPointerTy()
+                ? Arg.getType()
+                : Type::getInt64Ty(Builder.getContext()),
+            OMPBuilder.M.getDataLayout().getAllocaAddrSpace());
+        llvm::Value *AddrAscast =
+            Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, Input->getType());
+        Builder.CreateStore(&Arg, AddrAscast);
+
+        Builder.restoreIP(CodeGenIP);
+
+        RetVal = Builder.CreateLoad(Arg.getType(), AddrAscast);
+
+        return Builder.saveIP();
+      };
 
   llvm::OpenMPIRBuilder::MapInfosTy CombinedInfos;
   auto GenMapInfoCB = [&](llvm::OpenMPIRBuilder::InsertPointTy codeGenIP)
@@ -5322,9 +6292,13 @@ TEST_F(OpenMPIRBuilderTest, TargetRegionDevice) {
   TargetRegionEntryInfo EntryInfo("parent", /*DeviceID=*/1, /*FileID=*/2,
                                   /*Line=*/3, /*Count=*/0);
 
-  Builder.restoreIP(OMPBuilder.createTarget(
-      Loc, EntryIP, EntryIP, EntryInfo, /*NumTeams=*/-1,
-      /*NumThreads=*/0, CapturedArgs, GenMapInfoCB, BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTarget(Loc, /*IsOffloadEntry=*/true, EntryIP, EntryIP,
+                              EntryInfo, /*NumTeams=*/-1,
+                              /*NumThreads=*/0, CapturedArgs, GenMapInfoCB,
+                              BodyGenCB, SimpleArgAccessorCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
 
   Builder.CreateRetVoid();
   OMPBuilder.finalize();
@@ -5336,20 +6310,29 @@ TEST_F(OpenMPIRBuilderTest, TargetRegionDevice) {
   EXPECT_NE(F, OutlinedFn);
 
   EXPECT_TRUE(OutlinedFn->hasWeakODRLinkage());
-  EXPECT_EQ(OutlinedFn->arg_size(), 2U);
+  // Account for the "implicit" first argument.
   EXPECT_EQ(OutlinedFn->getName(), "__omp_offloading_1_2_parent_l3");
-  EXPECT_TRUE(OutlinedFn->getArg(0)->getType()->isPointerTy());
+  EXPECT_EQ(OutlinedFn->arg_size(), 3U);
   EXPECT_TRUE(OutlinedFn->getArg(1)->getType()->isPointerTy());
+  EXPECT_TRUE(OutlinedFn->getArg(2)->getType()->isPointerTy());
 
   // Check entry block
   auto &EntryBlock = OutlinedFn->getEntryBlock();
-  Instruction *Init = EntryBlock.getFirstNonPHI();
-  EXPECT_NE(Init, nullptr);
+  Instruction *Alloca1 = EntryBlock.getFirstNonPHI();
+  EXPECT_NE(Alloca1, nullptr);
 
-  auto *InitCall = dyn_cast<CallInst>(Init);
+  EXPECT_TRUE(isa<AllocaInst>(Alloca1));
+  auto *Store1 = Alloca1->getNextNode();
+  EXPECT_TRUE(isa<StoreInst>(Store1));
+  auto *Alloca2 = Store1->getNextNode();
+  EXPECT_TRUE(isa<AllocaInst>(Alloca2));
+  auto *Store2 = Alloca2->getNextNode();
+  EXPECT_TRUE(isa<StoreInst>(Store2));
+
+  auto *InitCall = dyn_cast<CallInst>(Store2->getNextNode());
   EXPECT_NE(InitCall, nullptr);
   EXPECT_EQ(InitCall->getCalledFunction()->getName(), "__kmpc_target_init");
-  EXPECT_EQ(InitCall->arg_size(), 1U);
+  EXPECT_EQ(InitCall->arg_size(), 2U);
   EXPECT_TRUE(isa<GlobalVariable>(InitCall->getArgOperand(0)));
   auto *KernelEnvGV = cast<GlobalVariable>(InitCall->getArgOperand(0));
   EXPECT_TRUE(isa<ConstantStruct>(KernelEnvGV->getInitializer()));
@@ -5370,22 +6353,180 @@ TEST_F(OpenMPIRBuilderTest, TargetRegionDevice) {
   // Check user code block
   auto *UserCodeBlock = EntryBlockBranch->getSuccessor(0);
   EXPECT_EQ(UserCodeBlock->getName(), "user_code.entry");
-  auto *Alloca1 = UserCodeBlock->getFirstNonPHI();
-  EXPECT_TRUE(isa<AllocaInst>(Alloca1));
-  auto *Store1 = Alloca1->getNextNode();
-  EXPECT_TRUE(isa<StoreInst>(Store1));
-  auto *Load1 = Store1->getNextNode();
+  auto *Load1 = UserCodeBlock->getFirstNonPHI();
   EXPECT_TRUE(isa<LoadInst>(Load1));
-  auto *Alloca2 = Load1->getNextNode();
+  auto *Load2 = Load1->getNextNode();
+  EXPECT_TRUE(isa<LoadInst>(Load2));
+
+  auto *OutlinedBlockBr = Load2->getNextNode();
+  EXPECT_TRUE(isa<BranchInst>(OutlinedBlockBr));
+
+  auto *OutlinedBlock = OutlinedBlockBr->getSuccessor(0);
+  EXPECT_EQ(OutlinedBlock->getName(), "outlined.body");
+
+  auto *Value1 = OutlinedBlock->getFirstNonPHI();
+  EXPECT_EQ(Value1, Value);
+  EXPECT_EQ(Value1->getNextNode(), TargetStore);
+  auto *Deinit = TargetStore->getNextNode();
+  EXPECT_NE(Deinit, nullptr);
+
+  auto *DeinitCall = dyn_cast<CallInst>(Deinit);
+  EXPECT_NE(DeinitCall, nullptr);
+  EXPECT_EQ(DeinitCall->getCalledFunction()->getName(), "__kmpc_target_deinit");
+  EXPECT_EQ(DeinitCall->arg_size(), 0U);
+
+  EXPECT_TRUE(isa<ReturnInst>(DeinitCall->getNextNode()));
+
+  // Check exit block
+  auto *ExitBlock = EntryBlockBranch->getSuccessor(1);
+  EXPECT_EQ(ExitBlock->getName(), "worker.exit");
+  EXPECT_TRUE(isa<ReturnInst>(ExitBlock->getFirstNonPHI()));
+}
+
+TEST_F(OpenMPIRBuilderTest, ConstantAllocaRaise) {
+  OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.setConfig(
+      OpenMPIRBuilderConfig(true, false, false, false, false, false, false));
+  OMPBuilder.initialize();
+
+  F->setName("func");
+  IRBuilder<> Builder(BB);
+  OpenMPIRBuilder::LocationDescription Loc({Builder.saveIP(), DL});
+
+  LoadInst *Value = nullptr;
+  StoreInst *TargetStore = nullptr;
+  llvm::SmallVector<llvm::Value *, 1> CapturedArgs = {
+      Constant::getNullValue(PointerType::get(Ctx, 0))};
+
+  auto SimpleArgAccessorCB =
+      [&](llvm::Argument &Arg, llvm::Value *Input, llvm::Value *&RetVal,
+          llvm::OpenMPIRBuilder::InsertPointTy AllocaIP,
+          llvm::OpenMPIRBuilder::InsertPointTy CodeGenIP) {
+        if (!OMPBuilder.Config.isTargetDevice()) {
+          RetVal = cast<llvm::Value>(&Arg);
+          return CodeGenIP;
+        }
+
+        Builder.restoreIP(AllocaIP);
+
+        llvm::Value *Addr = Builder.CreateAlloca(
+            Arg.getType()->isPointerTy()
+                ? Arg.getType()
+                : Type::getInt64Ty(Builder.getContext()),
+            OMPBuilder.M.getDataLayout().getAllocaAddrSpace());
+        llvm::Value *AddrAscast =
+            Builder.CreatePointerBitCastOrAddrSpaceCast(Addr, Input->getType());
+        Builder.CreateStore(&Arg, AddrAscast);
+
+        Builder.restoreIP(CodeGenIP);
+
+        RetVal = Builder.CreateLoad(Arg.getType(), AddrAscast);
+
+        return Builder.saveIP();
+      };
+
+  llvm::OpenMPIRBuilder::MapInfosTy CombinedInfos;
+  auto GenMapInfoCB = [&](llvm::OpenMPIRBuilder::InsertPointTy codeGenIP)
+      -> llvm::OpenMPIRBuilder::MapInfosTy & {
+    CreateDefaultMapInfos(OMPBuilder, CapturedArgs, CombinedInfos);
+    return CombinedInfos;
+  };
+
+  llvm::Value *RaiseAlloca = nullptr;
+
+  auto BodyGenCB = [&](OpenMPIRBuilder::InsertPointTy AllocaIP,
+                       OpenMPIRBuilder::InsertPointTy CodeGenIP)
+      -> OpenMPIRBuilder::InsertPointTy {
+    Builder.restoreIP(CodeGenIP);
+    RaiseAlloca = Builder.CreateAlloca(Builder.getInt32Ty());
+    Value = Builder.CreateLoad(Type::getInt32Ty(Ctx), CapturedArgs[0]);
+    TargetStore = Builder.CreateStore(Value, RaiseAlloca);
+    return Builder.saveIP();
+  };
+
+  IRBuilder<>::InsertPoint EntryIP(&F->getEntryBlock(),
+                                   F->getEntryBlock().getFirstInsertionPt());
+  TargetRegionEntryInfo EntryInfo("parent", /*DeviceID=*/1, /*FileID=*/2,
+                                  /*Line=*/3, /*Count=*/0);
+
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTarget(Loc, /*IsOffloadEntry=*/true, EntryIP, EntryIP,
+                              EntryInfo, /*NumTeams=*/-1,
+                              /*NumThreads=*/0, CapturedArgs, GenMapInfoCB,
+                              BodyGenCB, SimpleArgAccessorCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
+
+  Builder.CreateRetVoid();
+  OMPBuilder.finalize();
+
+  // Check outlined function
+  EXPECT_FALSE(verifyModule(*M, &errs()));
+  EXPECT_NE(TargetStore, nullptr);
+  Function *OutlinedFn = TargetStore->getFunction();
+  EXPECT_NE(F, OutlinedFn);
+
+  EXPECT_TRUE(OutlinedFn->hasWeakODRLinkage());
+  // Account for the "implicit" first argument.
+  EXPECT_EQ(OutlinedFn->getName(), "__omp_offloading_1_2_parent_l3");
+  EXPECT_EQ(OutlinedFn->arg_size(), 2U);
+  EXPECT_TRUE(OutlinedFn->getArg(1)->getType()->isPointerTy());
+
+  // Check entry block, to see if we have raised our alloca
+  // from the body to the entry block.
+  auto &EntryBlock = OutlinedFn->getEntryBlock();
+
+  // Check that we have moved our alloca created in the
+  // BodyGenCB function, to the top of the function.
+  Instruction *Alloca1 = EntryBlock.getFirstNonPHI();
+  EXPECT_NE(Alloca1, nullptr);
+  EXPECT_TRUE(isa<AllocaInst>(Alloca1));
+  EXPECT_EQ(Alloca1, RaiseAlloca);
+
+  // Verify we have not altered the rest of the function
+  // inappropriately with our alloca movement.
+  auto *Alloca2 = Alloca1->getNextNode();
   EXPECT_TRUE(isa<AllocaInst>(Alloca2));
   auto *Store2 = Alloca2->getNextNode();
   EXPECT_TRUE(isa<StoreInst>(Store2));
-  auto *Load2 = Store2->getNextNode();
-  EXPECT_TRUE(isa<LoadInst>(Load2));
 
-  auto *Value1 = Load2->getNextNode();
-  EXPECT_EQ(Value1, Value);
-  EXPECT_EQ(Value1->getNextNode(), TargetStore);
+  auto *InitCall = dyn_cast<CallInst>(Store2->getNextNode());
+  EXPECT_NE(InitCall, nullptr);
+  EXPECT_EQ(InitCall->getCalledFunction()->getName(), "__kmpc_target_init");
+  EXPECT_EQ(InitCall->arg_size(), 2U);
+  EXPECT_TRUE(isa<GlobalVariable>(InitCall->getArgOperand(0)));
+  auto *KernelEnvGV = cast<GlobalVariable>(InitCall->getArgOperand(0));
+  EXPECT_TRUE(isa<ConstantStruct>(KernelEnvGV->getInitializer()));
+  auto *KernelEnvC = cast<ConstantStruct>(KernelEnvGV->getInitializer());
+  EXPECT_TRUE(isa<ConstantStruct>(KernelEnvC->getAggregateElement(0U)));
+  auto *ConfigC = cast<ConstantStruct>(KernelEnvC->getAggregateElement(0U));
+  EXPECT_EQ(ConfigC->getAggregateElement(0U),
+            ConstantInt::get(Type::getInt8Ty(Ctx), true));
+  EXPECT_EQ(ConfigC->getAggregateElement(1U),
+            ConstantInt::get(Type::getInt8Ty(Ctx), true));
+  EXPECT_EQ(ConfigC->getAggregateElement(2U),
+            ConstantInt::get(Type::getInt8Ty(Ctx), OMP_TGT_EXEC_MODE_GENERIC));
+
+  auto *EntryBlockBranch = EntryBlock.getTerminator();
+  EXPECT_NE(EntryBlockBranch, nullptr);
+  EXPECT_EQ(EntryBlockBranch->getNumSuccessors(), 2U);
+
+  // Check user code block
+  auto *UserCodeBlock = EntryBlockBranch->getSuccessor(0);
+  EXPECT_EQ(UserCodeBlock->getName(), "user_code.entry");
+  auto *Load1 = UserCodeBlock->getFirstNonPHI();
+  EXPECT_TRUE(isa<LoadInst>(Load1));
+
+  auto *OutlinedBlockBr = Load1->getNextNode();
+  EXPECT_TRUE(isa<BranchInst>(OutlinedBlockBr));
+
+  auto *OutlinedBlock = OutlinedBlockBr->getSuccessor(0);
+  EXPECT_EQ(OutlinedBlock->getName(), "outlined.body");
+
+  auto *Load2 = OutlinedBlock->getFirstNonPHI();
+  EXPECT_TRUE(isa<LoadInst>(Load2));
+  EXPECT_EQ(Load2, Value);
+  EXPECT_EQ(Load2->getNextNode(), TargetStore);
   auto *Deinit = TargetStore->getNextNode();
   EXPECT_NE(Deinit, nullptr);
 
@@ -5405,6 +6546,7 @@ TEST_F(OpenMPIRBuilderTest, TargetRegionDevice) {
 TEST_F(OpenMPIRBuilderTest, CreateTask) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -5432,15 +6574,17 @@ TEST_F(OpenMPIRBuilderTest, CreateTask) {
     Instruction *ThenTerm, *ElseTerm;
     SplitBlockAndInsertIfThenElse(Cmp, CodeGenIP.getBlock()->getTerminator(),
                                   &ThenTerm, &ElseTerm);
+    return Error::success();
   };
 
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
       InsertPointTy(BodyBB, BodyBB->getFirstInsertionPt()), DL);
-  Builder.restoreIP(OMPBuilder.createTask(
-      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()),
-      BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTask(
+      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5486,25 +6630,28 @@ TEST_F(OpenMPIRBuilderTest, CreateTask) {
             24); // 64-bit pointer + 128-bit integer
 
   // Verify Wrapper function
-  Function *WrapperFunc =
+  Function *OutlinedFn =
       dyn_cast<Function>(TaskAllocCall->getArgOperand(5)->stripPointerCasts());
-  ASSERT_NE(WrapperFunc, nullptr);
+  ASSERT_NE(OutlinedFn, nullptr);
 
-  LoadInst *SharedsLoad = dyn_cast<LoadInst>(WrapperFunc->begin()->begin());
+  LoadInst *SharedsLoad = dyn_cast<LoadInst>(OutlinedFn->begin()->begin());
   ASSERT_NE(SharedsLoad, nullptr);
-  EXPECT_EQ(SharedsLoad->getPointerOperand(), WrapperFunc->getArg(1));
+  EXPECT_EQ(SharedsLoad->getPointerOperand(), OutlinedFn->getArg(1));
 
-  EXPECT_FALSE(WrapperFunc->isDeclaration());
-  CallInst *OutlinedFnCall =
-      dyn_cast<CallInst>(++WrapperFunc->begin()->begin());
-  ASSERT_NE(OutlinedFnCall, nullptr);
-  EXPECT_EQ(WrapperFunc->getArg(0)->getType(), Builder.getInt32Ty());
-  EXPECT_EQ(OutlinedFnCall->getArgOperand(0),
-            WrapperFunc->getArg(1)->uses().begin()->getUser());
+  EXPECT_FALSE(OutlinedFn->isDeclaration());
+  EXPECT_EQ(OutlinedFn->getArg(0)->getType(), Builder.getInt32Ty());
+
+  // Verify that the data argument is used only once, and that too in the load
+  // instruction that is then used for accessing shared data.
+  Value *DataPtr = OutlinedFn->getArg(1);
+  EXPECT_EQ(DataPtr->getNumUses(), 1U);
+  EXPECT_TRUE(isa<LoadInst>(DataPtr->uses().begin()->getUser()));
+  Value *Data = DataPtr->uses().begin()->getUser();
+  EXPECT_TRUE(all_of(Data->uses(), [](Use &U) {
+    return isa<GetElementPtrInst>(U.getUser());
+  }));
 
   // Verify the presence of `trunc` and `icmp` instructions in Outlined function
-  Function *OutlinedFn = OutlinedFnCall->getCalledFunction();
-  ASSERT_NE(OutlinedFn, nullptr);
   EXPECT_TRUE(any_of(instructions(OutlinedFn),
                      [](Instruction &inst) { return isa<TruncInst>(&inst); }));
   EXPECT_TRUE(any_of(instructions(OutlinedFn),
@@ -5530,39 +6677,56 @@ TEST_F(OpenMPIRBuilderTest, CreateTask) {
 TEST_F(OpenMPIRBuilderTest, CreateTaskNoArgs) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
 
-  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
 
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
       InsertPointTy(BodyBB, BodyBB->getFirstInsertionPt()), DL);
-  Builder.restoreIP(OMPBuilder.createTask(
-      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()),
-      BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTask(
+      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
   EXPECT_FALSE(verifyModule(*M, &errs()));
+
+  // Check that the outlined function has only one argument.
+  CallInst *TaskAllocCall = dyn_cast<CallInst>(
+      OMPBuilder.getOrCreateRuntimeFunctionPtr(OMPRTL___kmpc_omp_task_alloc)
+          ->user_back());
+  Function *OutlinedFn = dyn_cast<Function>(TaskAllocCall->getArgOperand(5));
+  ASSERT_NE(OutlinedFn, nullptr);
+  ASSERT_EQ(OutlinedFn->arg_size(), 1U);
 }
 
 TEST_F(OpenMPIRBuilderTest, CreateTaskUntied) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
-  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
       InsertPointTy(BodyBB, BodyBB->getFirstInsertionPt()), DL);
-  Builder.restoreIP(OMPBuilder.createTask(
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTask(
       Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB,
-      /*Tied=*/false));
+      /*Tied=*/false);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5581,10 +6745,13 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskUntied) {
 TEST_F(OpenMPIRBuilderTest, CreateTaskDepend) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
-  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
@@ -5596,9 +6763,11 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskDepend) {
                                      Type::getInt32Ty(M->getContext()), InDep);
     DDS.push_back(DDIn);
   }
-  Builder.restoreIP(OMPBuilder.createTask(
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTask(
       Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB,
-      /*Tied=*/false, /*Final*/ nullptr, /*IfCondition*/ nullptr, DDS));
+      /*Tied=*/false, /*Final*/ nullptr, /*IfCondition*/ nullptr, DDS);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5646,7 +6815,7 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskDepend) {
   ASSERT_NE(NumDepsNoAlias, nullptr);
   EXPECT_EQ(NumDepsNoAlias->getZExtValue(), 0U);
   EXPECT_EQ(TaskAllocCall->getOperand(6),
-            ConstantPointerNull::get(Type::getInt8PtrTy(M->getContext())));
+            ConstantPointerNull::get(PointerType::getUnqual(M->getContext())));
 
   EXPECT_FALSE(verifyModule(*M, &errs()));
 }
@@ -5654,19 +6823,25 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskDepend) {
 TEST_F(OpenMPIRBuilderTest, CreateTaskFinal) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
-  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
-  IRBuilderBase::InsertPoint AllocaIP = Builder.saveIP();
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
+  IRBuilderBase::InsertPoint AllocaIP = Builder.saveIP();
   Builder.SetInsertPoint(BodyBB);
   Value *Final = Builder.CreateICmp(
       CmpInst::Predicate::ICMP_EQ, F->getArg(0),
       ConstantInt::get(Type::getInt32Ty(M->getContext()), 0U));
   OpenMPIRBuilder::LocationDescription Loc(Builder.saveIP(), DL);
-  Builder.restoreIP(OMPBuilder.createTask(Loc, AllocaIP, BodyGenCB,
-                                          /*Tied=*/false, Final));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTask(Loc, AllocaIP, BodyGenCB,
+                            /*Tied=*/false, Final);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5707,20 +6882,25 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskFinal) {
 TEST_F(OpenMPIRBuilderTest, CreateTaskIfCondition) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
-  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {};
-  IRBuilderBase::InsertPoint AllocaIP = Builder.saveIP();
+  auto BodyGenCB = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
+    return Error::success();
+  };
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
+  IRBuilderBase::InsertPoint AllocaIP = Builder.saveIP();
   Builder.SetInsertPoint(BodyBB);
   Value *IfCondition = Builder.CreateICmp(
       CmpInst::Predicate::ICMP_EQ, F->getArg(0),
       ConstantInt::get(Type::getInt32Ty(M->getContext()), 0U));
   OpenMPIRBuilder::LocationDescription Loc(Builder.saveIP(), DL);
-  Builder.restoreIP(OMPBuilder.createTask(Loc, AllocaIP, BodyGenCB,
-                                          /*Tied=*/false, /*Final=*/nullptr,
-                                          IfCondition));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP =
+      OMPBuilder.createTask(Loc, AllocaIP, BodyGenCB,
+                            /*Tied=*/false, /*Final=*/nullptr, IfCondition);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5758,15 +6938,16 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskIfCondition) {
           ->user_back());
   ASSERT_NE(TaskBeginIfCall, nullptr);
   ASSERT_NE(TaskCompleteCall, nullptr);
-  Function *WrapperFunc =
+  Function *OulinedFn =
       dyn_cast<Function>(TaskAllocCall->getArgOperand(5)->stripPointerCasts());
-  ASSERT_NE(WrapperFunc, nullptr);
-  CallInst *WrapperFuncCall = dyn_cast<CallInst>(WrapperFunc->user_back());
-  ASSERT_NE(WrapperFuncCall, nullptr);
+  ASSERT_NE(OulinedFn, nullptr);
+  CallInst *OulinedFnCall = dyn_cast<CallInst>(OulinedFn->user_back());
+  ASSERT_NE(OulinedFnCall, nullptr);
   EXPECT_EQ(TaskBeginIfCall->getParent(),
             IfConditionBranchInst->getSuccessor(1));
-  EXPECT_EQ(TaskBeginIfCall->getNextNonDebugInstruction(), WrapperFuncCall);
-  EXPECT_EQ(WrapperFuncCall->getNextNonDebugInstruction(), TaskCompleteCall);
+
+  EXPECT_EQ(TaskBeginIfCall->getNextNonDebugInstruction(), OulinedFnCall);
+  EXPECT_EQ(OulinedFnCall->getNextNonDebugInstruction(), TaskCompleteCall);
 }
 
 TEST_F(OpenMPIRBuilderTest, CreateTaskgroup) {
@@ -5803,15 +6984,17 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskgroup) {
     SplitBlockAndInsertIfThenElse(InternalIfCmp,
                                   CodeGenIP.getBlock()->getTerminator(),
                                   &ThenTerm, &ElseTerm);
+    return Error::success();
   };
 
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
       InsertPointTy(BodyBB, BodyBB->getFirstInsertionPt()), DL);
-  Builder.restoreIP(OMPBuilder.createTaskgroup(
-      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()),
-      BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTaskgroup(
+      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5866,6 +7049,7 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskgroup) {
 TEST_F(OpenMPIRBuilderTest, CreateTaskgroupWithTasks) {
   using InsertPointTy = OpenMPIRBuilder::InsertPointTy;
   OpenMPIRBuilder OMPBuilder(*M);
+  OMPBuilder.Config.IsTargetDevice = false;
   OMPBuilder.initialize();
   F->setName("func");
   IRBuilder<> Builder(BB);
@@ -5883,9 +7067,13 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskgroupWithTasks) {
           Builder.CreateLoad(Alloca64->getAllocatedType(), Alloca64);
       Value *AddInst = Builder.CreateAdd(LoadValue, Builder.getInt64(64));
       Builder.CreateStore(AddInst, Alloca64);
+      return Error::success();
     };
     OpenMPIRBuilder::LocationDescription Loc(Builder.saveIP(), DL);
-    Builder.restoreIP(OMPBuilder.createTask(Loc, AllocaIP, TaskBodyGenCB1));
+    OpenMPIRBuilder::InsertPointOrErrorTy TaskIP1 =
+        OMPBuilder.createTask(Loc, AllocaIP, TaskBodyGenCB1);
+    assert(TaskIP1 && "unexpected error");
+    Builder.restoreIP(*TaskIP1);
 
     auto TaskBodyGenCB2 = [&](InsertPointTy AllocaIP, InsertPointTy CodeGenIP) {
       Builder.restoreIP(CodeGenIP);
@@ -5893,18 +7081,24 @@ TEST_F(OpenMPIRBuilderTest, CreateTaskgroupWithTasks) {
           Builder.CreateLoad(Alloca32->getAllocatedType(), Alloca32);
       Value *AddInst = Builder.CreateAdd(LoadValue, Builder.getInt32(32));
       Builder.CreateStore(AddInst, Alloca32);
+      return Error::success();
     };
     OpenMPIRBuilder::LocationDescription Loc2(Builder.saveIP(), DL);
-    Builder.restoreIP(OMPBuilder.createTask(Loc2, AllocaIP, TaskBodyGenCB2));
+    OpenMPIRBuilder::InsertPointOrErrorTy TaskIP2 =
+        OMPBuilder.createTask(Loc2, AllocaIP, TaskBodyGenCB2);
+    assert(TaskIP2 && "unexpected error");
+    Builder.restoreIP(*TaskIP2);
+    return Error::success();
   };
 
   BasicBlock *AllocaBB = Builder.GetInsertBlock();
   BasicBlock *BodyBB = splitBB(Builder, /*CreateBranch=*/true, "alloca.split");
   OpenMPIRBuilder::LocationDescription Loc(
       InsertPointTy(BodyBB, BodyBB->getFirstInsertionPt()), DL);
-  Builder.restoreIP(OMPBuilder.createTaskgroup(
-      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()),
-      BodyGenCB));
+  OpenMPIRBuilder::InsertPointOrErrorTy AfterIP = OMPBuilder.createTaskgroup(
+      Loc, InsertPointTy(AllocaBB, AllocaBB->getFirstInsertionPt()), BodyGenCB);
+  assert(AfterIP && "unexpected error");
+  Builder.restoreIP(*AfterIP);
   OMPBuilder.finalize();
   Builder.CreateRetVoid();
 
@@ -5947,28 +7141,18 @@ TEST_F(OpenMPIRBuilderTest, EmitOffloadingArraysArguments) {
   OpenMPIRBuilder::TargetDataRTArgs RTArgs;
   OpenMPIRBuilder::TargetDataInfo Info(true, false);
 
-  auto VoidPtrTy = PointerType::getUnqual(Builder.getContext());
   auto VoidPtrPtrTy = PointerType::getUnqual(Builder.getContext());
-  auto Int64Ty = Type::getInt64Ty(Builder.getContext());
   auto Int64PtrTy = PointerType::getUnqual(Builder.getContext());
-  auto Array4VoidPtrTy = ArrayType::get(VoidPtrTy, 4);
-  auto Array4Int64PtrTy = ArrayType::get(Int64Ty, 4);
 
-  Info.RTArgs.BasePointersArray =
-      ConstantPointerNull::get(Array4VoidPtrTy->getPointerTo(0));
-  Info.RTArgs.PointersArray =
-      ConstantPointerNull::get(Array4VoidPtrTy->getPointerTo());
-  Info.RTArgs.SizesArray =
-      ConstantPointerNull::get(Array4Int64PtrTy->getPointerTo());
-  Info.RTArgs.MapTypesArray =
-      ConstantPointerNull::get(Array4Int64PtrTy->getPointerTo());
-  Info.RTArgs.MapNamesArray =
-      ConstantPointerNull::get(Array4VoidPtrTy->getPointerTo());
-  Info.RTArgs.MappersArray =
-      ConstantPointerNull::get(Array4VoidPtrTy->getPointerTo());
+  Info.RTArgs.BasePointersArray = ConstantPointerNull::get(Builder.getPtrTy(0));
+  Info.RTArgs.PointersArray = ConstantPointerNull::get(Builder.getPtrTy(0));
+  Info.RTArgs.SizesArray = ConstantPointerNull::get(Builder.getPtrTy(0));
+  Info.RTArgs.MapTypesArray = ConstantPointerNull::get(Builder.getPtrTy(0));
+  Info.RTArgs.MapNamesArray = ConstantPointerNull::get(Builder.getPtrTy(0));
+  Info.RTArgs.MappersArray = ConstantPointerNull::get(Builder.getPtrTy(0));
   Info.NumberOfPtrs = 4;
-
-  OMPBuilder.emitOffloadingArraysArgument(Builder, RTArgs, Info, false, false);
+  Info.EmitDebug = false;
+  OMPBuilder.emitOffloadingArraysArgument(Builder, RTArgs, Info, false);
 
   EXPECT_NE(RTArgs.BasePointersArray, nullptr);
   EXPECT_NE(RTArgs.PointersArray, nullptr);
@@ -6057,16 +7241,16 @@ TEST_F(OpenMPIRBuilderTest, registerTargetGlobalVariable) {
 
   // Clauses for data_int_0 with To + Any clauses for the host
   std::vector<GlobalVariable *> OffloadEntries;
-  OffloadEntries.push_back(M->getNamedGlobal(".omp_offloading.entry_name"));
+  OffloadEntries.push_back(M->getNamedGlobal(".offloading.entry_name"));
   OffloadEntries.push_back(
-      M->getNamedGlobal(".omp_offloading.entry.test_data_int_0"));
+      M->getNamedGlobal(".offloading.entry.test_data_int_0"));
 
   // Clauses for data_int_1 with Link + Any clauses for the host
   OffloadEntries.push_back(
       M->getNamedGlobal("test_data_int_1_decl_tgt_ref_ptr"));
-  OffloadEntries.push_back(M->getNamedGlobal(".omp_offloading.entry_name.1"));
-  OffloadEntries.push_back(M->getNamedGlobal(
-      ".omp_offloading.entry.test_data_int_1_decl_tgt_ref_ptr"));
+  OffloadEntries.push_back(M->getNamedGlobal(".offloading.entry_name.1"));
+  OffloadEntries.push_back(
+      M->getNamedGlobal(".offloading.entry.test_data_int_1_decl_tgt_ref_ptr"));
 
   for (unsigned I = 0; I < OffloadEntries.size(); ++I)
     EXPECT_NE(OffloadEntries[I], nullptr);
@@ -6127,46 +7311,6 @@ TEST_F(OpenMPIRBuilderTest, createGPUOffloadEntry) {
   // Check kernel attributes
   EXPECT_TRUE(Fn->hasFnAttribute("kernel"));
   EXPECT_TRUE(Fn->hasFnAttribute(Attribute::MustProgress));
-}
-
-TEST_F(OpenMPIRBuilderTest, CreateRegisterRequires) {
-  OpenMPIRBuilder OMPBuilder(*M);
-  OMPBuilder.initialize();
-
-  OpenMPIRBuilderConfig Config(/* IsTargetDevice = */ false,
-                               /* IsGPU = */ false,
-                               /* OpenMPOffloadMandatory = */ false,
-                               /* HasRequiresReverseOffload = */ true,
-                               /* HasRequiresUnifiedAddress = */ false,
-                               /* HasRequiresUnifiedSharedMemory = */ true,
-                               /* HasRequiresDynamicAllocators = */ false);
-  OMPBuilder.setConfig(Config);
-
-  auto FName =
-      OMPBuilder.createPlatformSpecificName({"omp_offloading", "requires_reg"});
-  EXPECT_EQ(FName, ".omp_offloading.requires_reg");
-
-  Function *Fn = OMPBuilder.createRegisterRequires(FName);
-  EXPECT_NE(Fn, nullptr);
-  EXPECT_EQ(FName, Fn->getName());
-
-  EXPECT_EQ(Fn->getSection(), ".text.startup");
-  EXPECT_TRUE(Fn->hasInternalLinkage());
-  EXPECT_TRUE(Fn->hasFnAttribute(Attribute::NoInline));
-  EXPECT_TRUE(Fn->hasFnAttribute(Attribute::NoUnwind));
-  EXPECT_EQ(Fn->size(), 1u);
-
-  BasicBlock *Entry = &Fn->getEntryBlock();
-  EXPECT_FALSE(Entry->empty());
-  EXPECT_EQ(Fn->getReturnType()->getTypeID(), Type::VoidTyID);
-
-  CallInst *Call = &cast<CallInst>(*Entry->begin());
-  EXPECT_EQ(Call->getCalledFunction()->getName(), "__tgt_register_requires");
-  EXPECT_EQ(Call->getNumOperands(), 2u);
-
-  Value *Flags = Call->getArgOperand(0);
-  EXPECT_EQ(cast<ConstantInt>(Flags)->getSExtValue(),
-            OMPBuilder.Config.getRequiresFlags());
 }
 
 } // namespace

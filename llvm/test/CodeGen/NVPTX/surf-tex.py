@@ -1,6 +1,6 @@
 # RUN: %python %s --target=cuda --tests=suld,sust,tex,tld4 --gen-list=%t.list > %t-cuda.ll
-# RUN: llc -mcpu=sm_20 %t-cuda.ll -verify-machineinstrs -o - | FileCheck %t-cuda.ll
-# RUN: %if ptxas %{ llc -mcpu=sm_20 %t-cuda.ll -verify-machineinstrs -o - | %ptxas-verify %}
+# RUN: llc -mcpu=sm_60 -mattr=+ptx43 %t-cuda.ll -verify-machineinstrs -o - | FileCheck %t-cuda.ll
+# RUN: %if ptxas %{ llc -mcpu=sm_60 -mattr=+ptx43 %t-cuda.ll -verify-machineinstrs -o - | %ptxas-verify %}
 
 # We only need to run this second time for texture tests, because
 # there is a difference between unified and non-unified intrinsics.
@@ -113,6 +113,15 @@ def get_llvm_value_type(vec, ty_ptx):
 
     value = {"": "{ty}", "v2": "{ty}, {ty}", "v4": "{ty}, {ty}, {ty}, {ty}"}
     return value[vec].format(ty=ty)
+
+
+id_counter = 0
+
+
+def get_table_gen_id():
+    global id_counter
+    id_counter += 1
+    return id_counter
 
 
 def gen_triple(target):
@@ -261,7 +270,6 @@ def gen_suld_tests(target, global_surf):
   }
   ; CHECK-LABEL: .entry ${test_name}_global
   ; CHECK: ${instruction} ${reg_ret}, [${global_surf}, ${reg_access}]
-  ;
   define void @${test_name}_global(${retty}* %ret, ${access}) {
     %gs = tail call i64 @llvm.nvvm.texsurf.handle.internal.p1i64(i64 addrspace(1)* @${global_surf})
     %val = tail call ${retty} @${intrinsic}(i64 %gs, ${access})
@@ -354,7 +362,6 @@ def gen_sust_tests(target, global_surf):
   }
   ; CHECK-LABEL: .entry ${test_name}_global
   ; CHECK: ${instruction} [${global_surf}, ${reg_access}], ${reg_value}
-  ;
   define void @${test_name}_global(${value}, ${access}) {
     %gs = tail call i64 @llvm.nvvm.texsurf.handle.internal.p1i64(i64 addrspace(1)* @${global_surf})
     tail call void @${intrinsic}(i64 %gs, ${access}, ${value})
@@ -656,8 +663,8 @@ def gen_tex_tests(target, global_tex, global_sampler):
 
         # FIXME: missing intrinsics.
         # Support for tex.grad.{cube, acube} introduced in PTX ISA version
-        # 4.3.
-        if mipmap == "grad" and geom in ("cube", "acube"):
+        # 4.3, currently supported only in unified mode.
+        if not is_unified(target) and mipmap == "grad" and geom in ("cube", "acube"):
             continue
 
         # The instruction returns a two-element vector for destination

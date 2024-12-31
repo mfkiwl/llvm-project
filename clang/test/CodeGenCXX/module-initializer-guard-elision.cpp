@@ -4,28 +4,38 @@
 
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 O.cpp \
 // RUN:    -emit-module-interface -o O.pcm
-// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 O.pcm -S -emit-llvm \
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 O.pcm -emit-llvm \
 // RUN:  -o - | FileCheck %s --check-prefix=CHECK-O
 
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 P.cpp \
-// RUN:    -emit-module-interface -fmodule-file=O=O.pcm -o P.pcm
-// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 P.pcm -S -emit-llvm \
-// RUN:  -o - | FileCheck %s --check-prefix=CHECK-P
+// RUN:    -emit-module-interface -fprebuilt-module-path=%t -o P.pcm
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 P.pcm -emit-llvm \
+// RUN:   -fprebuilt-module-path=%t -o - | FileCheck %s --check-prefix=CHECK-P
 
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 Q.cpp \
 // RUN:    -emit-module-interface -o Q.pcm
-// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 Q.pcm -S -emit-llvm \
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 Q.pcm -emit-llvm \
 // RUN:    -o - | FileCheck %s --check-prefix=CHECK-Q
 
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 R.cpp \
-// RUN:    -emit-module-interface -fmodule-file=Q=Q.pcm -o R.pcm
-// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 R.pcm -S -emit-llvm \
-// RUN:    -o - | FileCheck %s --check-prefix=CHECK-R
+// RUN:    -emit-module-interface -fprebuilt-module-path=%t -o R.pcm
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 R.pcm -emit-llvm \
+// RUN:    -fprebuilt-module-path=%t -o - | FileCheck %s --check-prefix=CHECK-R
 
 // RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 S.cpp \
-// RUN:    -emit-module-interface -fmodule-file=Q=Q.pcm -fmodule-file=R=R.pcm -o S.pcm
-// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 S.pcm -S -emit-llvm \
-// RUN:    -o - | FileCheck %s --check-prefix=CHECK-S
+// RUN:    -emit-module-interface -fprebuilt-module-path=%t -o S.pcm
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 S.pcm -emit-llvm \
+// RUN:    -fprebuilt-module-path=%t -o - | FileCheck %s --check-prefix=CHECK-S
+
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 T.cpp \
+// RUN:    -emit-module-interface -fprebuilt-module-path=%t -o T.pcm
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 T.pcm -emit-llvm \
+// RUN:    -fprebuilt-module-path=%t -o - | FileCheck %s --check-prefix=CHECK-T
+
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 U.cpp \
+// RUN:    -emit-module-interface -fprebuilt-module-path=%t -o U.pcm
+// RUN: %clang_cc1 -triple %itanium_abi_triple -std=c++20 U.pcm -emit-llvm \
+// RUN:    -fprebuilt-module-path=%t -o - | FileCheck %s --check-prefix=CHECK-U
 
 // Testing cases where we can elide the module initializer guard variable.
 
@@ -96,3 +106,25 @@ export import R;
 // CHECK-S: define void @_ZGIW1S
 // CHECK-S: store i8 1, ptr @_ZGIW1S__in_chrg
 // CHECK-S: call{{.*}}@_ZGIW1R
+
+// The module itself doesn't have a global init and it doesn't import any module.
+// But the global module fragment imports a module that needs an init. So needs a guard.
+//--- T.cpp
+module;
+import S;
+export module T;
+
+// CHECK-T: define void @_ZGIW1T
+// CHECK-T: store i8 1, ptr @_ZGIW1T__in_chrg
+// CHECK-T: call{{.*}}@_ZGIW1S
+
+// The module itself doesn't have a global init and it doesn't import any module.
+// But the private module fragment imports a module that needs an init. So needs a guard.
+//--- U.cpp
+export module U;
+module :private;
+import T;
+
+// CHECK-U: define void @_ZGIW1U
+// CHECK-U: store i8 1, ptr @_ZGIW1U__in_chrg
+// CHECK-U: call{{.*}}@_ZGIW1T

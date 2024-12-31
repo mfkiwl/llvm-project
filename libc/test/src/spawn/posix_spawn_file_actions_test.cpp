@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/errno/libc_errno.h"
 #include "src/spawn/file_actions.h"
 #include "src/spawn/posix_spawn_file_actions_addclose.h"
 #include "src/spawn/posix_spawn_file_actions_adddup2.h"
@@ -14,7 +15,6 @@
 #include "src/spawn/posix_spawn_file_actions_init.h"
 #include "test/UnitTest/Test.h"
 
-#include <errno.h>
 #include <spawn.h>
 #include <stdint.h>
 
@@ -40,12 +40,15 @@ TEST(LlvmLibcPosixSpawnFileActionsTest, AddActions) {
   int action_count = 0;
   while (act != nullptr) {
     ++action_count;
-    if (action_count == 1)
+    if (action_count == 1) {
       ASSERT_EQ(act->type, LIBC_NAMESPACE::BaseSpawnFileAction::CLOSE);
-    if (action_count == 2)
+    }
+    if (action_count == 2) {
       ASSERT_EQ(act->type, LIBC_NAMESPACE::BaseSpawnFileAction::DUP2);
-    if (action_count == 3)
+    }
+    if (action_count == 3) {
       ASSERT_EQ(act->type, LIBC_NAMESPACE::BaseSpawnFileAction::OPEN);
+    }
     act = act->next;
   }
   ASSERT_EQ(action_count, 3);
