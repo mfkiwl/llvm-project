@@ -222,6 +222,9 @@ public:
   bool hasV79OpsOnly() const {
     return getHexagonArchVersion() == Hexagon::ArchEnum::V79;
   }
+  bool useHVXV79Ops() const {
+    return HexagonHVXVersion >= Hexagon::ArchEnum::V79;
+  }
 
   bool useAudioOps() const { return UseAudioOps; }
   bool useCompound() const { return UseCompound; }
@@ -363,7 +366,8 @@ private:
   void restoreLatency(SUnit *Src, SUnit *Dst) const;
   void changeLatency(SUnit *Src, SUnit *Dst, unsigned Lat) const;
   bool isBestZeroLatency(SUnit *Src, SUnit *Dst, const HexagonInstrInfo *TII,
-      SmallSet<SUnit*, 4> &ExclSrc, SmallSet<SUnit*, 4> &ExclDst) const;
+                         SmallPtrSet<SUnit *, 4> &ExclSrc,
+                         SmallPtrSet<SUnit *, 4> &ExclDst) const;
 };
 
 } // end namespace llvm
